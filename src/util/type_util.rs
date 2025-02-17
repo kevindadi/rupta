@@ -5,15 +5,15 @@
 
 use log::*;
 use rustc_hir::def_id::DefId;
-use rustc_middle::ty::{GenericArgKind, GenericArgsRef};
 use rustc_middle::ty::{
-    Const, ExistentialPredicate, FieldDef, ParamEnv, 
-    PolyFnSig, Ty, TyCtxt, TyKind, TypeAndMut
+    Const, CoroutineArgsExt, ExistentialPredicate, FieldDef, ParamEnv, PolyFnSig, Ty, TyCtxt, TyKind,
+    TypeAndMut, TypingEnv,
 };
+use rustc_middle::ty::{GenericArgKind, GenericArgsRef};
 use rustc_target::abi::VariantIdx;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::collections::hash_map::Entry;
 
 use crate::builder::substs_specializer::SubstsSpecializer;
 use crate::mir::analysis_context::AnalysisContext;
@@ -66,7 +66,6 @@ impl<'tcx> TypeCache<'tcx> {
     }
 }
 
-
 /// Provides a way to effectively get the pointer type fields of a given type.
 pub struct PointerProjectionsCache<'tcx> {
     pub(crate) ptr_projs_cache: HashMap<Ty<'tcx>, Vec<(ProjectionElems, Ty<'tcx>)>>,
@@ -89,7 +88,7 @@ impl<'tcx> PointerProjectionsCache<'tcx> {
     pub fn get_pointer_projections(
         &mut self,
         tcx: TyCtxt<'tcx>,
-        base_ty: Ty<'tcx>
+        base_ty: Ty<'tcx>,
     ) -> &Vec<(ProjectionElems, Ty<'tcx>)> {
         match self.ptr_projs_cache.entry(base_ty) {
             Entry::Occupied(o) => o.into_mut(),
@@ -97,7 +96,6 @@ impl<'tcx> PointerProjectionsCache<'tcx> {
         }
     }
 }
-
 
 /// Provides a way to effectively get the byte offsets of an ADT type's fields
 pub struct FieldByteOffsetCache<'tcx> {
@@ -154,7 +152,7 @@ impl<'tcx> FieldByteOffsetCache<'tcx> {
                 }
             };
 
-        let param_env = rustc_middle::ty::ParamEnv::reveal_all();
+        let param_env = rustc_middle::ty::TypingEnv::fully_monomorphized();
         let mut fields_byte_offsets = HashMap::new();
         match ty.kind() {
             TyKind::Adt(adt_def, args) if adt_def.is_struct() => {
@@ -178,7 +176,7 @@ impl<'tcx> FieldByteOffsetCache<'tcx> {
                             compute_subfields_offsets(proj, field_ty, byte_offset, &mut fields_byte_offsets);
                         }
                     }
-                } 
+                }
             }
             TyKind::Adt(adt_def, args) if adt_def.is_union() => {
                 let variant = adt_def.variants().iter().next().expect("at least one variant");
@@ -200,15 +198,13 @@ impl<'tcx> FieldByteOffsetCache<'tcx> {
                         // For enums with more than one inhabited variant: each variant comes with a discriminant
                         match layout.variants() {
                             // Todo
-                            rustc_target::abi::Variants::Single { index: _ } => {
-                            }
+                            rustc_target::abi::Variants::Single { index: _ } => {}
                             rustc_target::abi::Variants::Multiple {
                                 tag: _,
                                 tag_encoding: _,
                                 tag_field: _,
                                 variants: _,
-                            } => {
-                            }
+                            } => {}
                         }
                     }
                 }
@@ -255,7 +251,7 @@ impl<'tcx> FieldByteOffsetCache<'tcx> {
                     if let Ok(layout) = layout_of(tcx, param_env, *field_ty) {
                         compute_subfields_offsets(proj, *field_ty, byte_offset, &mut fields_byte_offsets);
                         byte_offset += layout.size.bytes_usize();
-                    } 
+                    }
                 }
             }
             // Todo
@@ -265,8 +261,6 @@ impl<'tcx> FieldByteOffsetCache<'tcx> {
         self.field_byte_offset_cache.insert(ty, fields_byte_offsets);
     }
 }
-
-
 
 /// Manage the type cast for paths
 pub struct PathCastCache<'tcx> {
@@ -292,7 +286,12 @@ impl<'tcx> PathCastCache<'tcx> {
     }
 
     /// Creates a path that casts the given path to a given type
-    pub fn cast_to(&mut self, acx: &mut AnalysisContext<'tcx, '_>, path: &Rc<Path>, ty: Ty<'tcx>) -> Option<Rc<Path>> {
+    pub fn cast_to(
+        &mut self,
+        acx: &mut AnalysisContext<'tcx, '_>,
+        path: &Rc<Path>,
+        ty: Ty<'tcx>,
+    ) -> Option<Rc<Path>> {
         let path = Self::get_regularized_path(acx, path.clone());
         if path.is_constant() {
             return Some(path);
@@ -314,8 +313,7 @@ impl<'tcx> PathCastCache<'tcx> {
             return Some(path);
         } else {
             // When casting a pointer to a struct to its first field, we return the first field directly
-            let fields_at_start_location =
-                fields_at_start_location(acx.tcx, path.clone(), original_ty);
+            let fields_at_start_location = fields_at_start_location(acx.tcx, path.clone(), original_ty);
             for (field, field_ty) in fields_at_start_location {
                 if equal_types(acx.tcx, field_ty, ty) {
                     return Some(field);
@@ -345,7 +343,12 @@ impl<'tcx> PathCastCache<'tcx> {
     }
 
     // Returns the type variant of the given path, returns none if the path has not been cast to ty
-    pub fn get_type_variant(&mut self, acx: &mut AnalysisContext<'tcx, '_>, path: &Rc<Path>, ty: Ty<'tcx>) -> Option<Rc<Path>> {
+    pub fn get_type_variant(
+        &mut self,
+        acx: &mut AnalysisContext<'tcx, '_>,
+        path: &Rc<Path>,
+        ty: Ty<'tcx>,
+    ) -> Option<Rc<Path>> {
         let path = Self::get_regularized_path(acx, path.clone());
         let original_ty = if let Some(ty) = acx.get_path_rustc_type(&path) {
             ty
@@ -358,8 +361,7 @@ impl<'tcx> PathCastCache<'tcx> {
         if equal_types(acx.tcx, original_ty, ty) {
             return Some(path);
         } else {
-            let fields_at_start_location =
-                fields_at_start_location(acx.tcx, path.clone(), original_ty);
+            let fields_at_start_location = fields_at_start_location(acx.tcx, path.clone(), original_ty);
             for (field, field_ty) in fields_at_start_location {
                 if equal_types(acx.tcx, field_ty, ty) {
                     return Some(field);
@@ -377,7 +379,6 @@ impl<'tcx> PathCastCache<'tcx> {
         }
     }
 
-
     /// Different paths may refer to the same memory location, we can regularize these path to a base path
     /// e.g. a.0.0, a.0, a.cast#T' and a are all represented by one path
     pub fn get_regularized_path(acx: &mut AnalysisContext<'tcx, '_>, path: Rc<Path>) -> Rc<Path> {
@@ -386,11 +387,17 @@ impl<'tcx> PathCastCache<'tcx> {
                 PathSelector::Cast(_) => {
                     // If this path is already a cast path, remove the last path selector
                     // to get the orginal path
-                    Self::get_regularized_path(acx, Path::truncate_projection_elems(&path, projection.len() - 1))
+                    Self::get_regularized_path(
+                        acx,
+                        Path::truncate_projection_elems(&path, projection.len() - 1),
+                    )
                 }
                 PathSelector::Index | PathSelector::UnionField(..) => {
                     // If this path is an index path of an array, remove the index selector
-                    Self::get_regularized_path(acx, Path::truncate_projection_elems(&path, projection.len() - 1))
+                    Self::get_regularized_path(
+                        acx,
+                        Path::truncate_projection_elems(&path, projection.len() - 1),
+                    )
                 }
                 PathSelector::Field(f) => {
                     // If this path is a field of a struct and the field's offset is 0,
@@ -404,11 +411,8 @@ impl<'tcx> PathCastCache<'tcx> {
                     };
                     if acx.get_field_byte_offset(struct_ty, &vec![PathSelector::Field(*f)]) == 0 {
                         Self::get_regularized_path(
-                            acx, 
-                            Path::truncate_projection_elems(
-                                &path,
-                                projection.len() - 1
-                            )
+                            acx,
+                            Path::truncate_projection_elems(&path, projection.len() - 1),
                         )
                     } else {
                         path
@@ -416,7 +420,10 @@ impl<'tcx> PathCastCache<'tcx> {
                 }
                 PathSelector::Downcast(_) => {
                     // If this path is an downcast path of an enum, remove the downcast selector
-                    Self::get_regularized_path(acx, Path::truncate_projection_elems(&path, projection.len() - 1))
+                    Self::get_regularized_path(
+                        acx,
+                        Path::truncate_projection_elems(&path, projection.len() - 1),
+                    )
                 }
                 _ => path,
             }
@@ -424,20 +431,16 @@ impl<'tcx> PathCastCache<'tcx> {
             path
         }
     }
-
 }
-
-
-
 
 /// Returns the target type of a reference type.
 pub fn get_dereferenced_type(ty: Ty<'_>) -> Ty<'_> {
     match ty.kind() {
-        TyKind::RawPtr(ty_and_mut) => ty_and_mut.ty,
+        TyKind::RawPtr(ty_and_mut, _) => *ty_and_mut,
         TyKind::Ref(_, t, _) => *t,
         _ => {
             if ty.is_box() {
-                ty.boxed_ty()
+                ty.boxed_ty().unwrap()
             } else {
                 ty
             }
@@ -449,11 +452,11 @@ pub fn get_dereferenced_type(ty: Ty<'_>) -> Ty<'_> {
 pub fn get_element_type<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
     match &ty.kind() {
         TyKind::Array(t, _) => *t,
-        TyKind::RawPtr(TypeAndMut { ty: t, .. }) | TyKind::Ref(_, t, _) => match t.kind() {
-            TyKind::Array(t, _) => *t,
-            TyKind::Slice(t) => *t,
+        TyKind::RawPtr(ty, _) | TyKind::Ref(_, ty, _) => match ty.kind() {
+            TyKind::Array(t, _) => *ty,
+            TyKind::Slice(t) => *ty,
             TyKind::Str => tcx.types.char,
-            _ => *t,
+            _ => *ty,
         },
         TyKind::Slice(t) => *t,
         TyKind::Str => tcx.types.char,
@@ -471,7 +474,10 @@ pub fn get_field_type<'tcx>(tcx: TyCtxt<'tcx>, base_ty: Ty<'tcx>, ordinal: usize
             let ft = field_ty(tcx, field, args);
             return ft;
         } else {
-            warn!("Getting the field type with ordinal {:?} for a Enum type {:?} ", ordinal, base_ty);
+            warn!(
+                "Getting the field type with ordinal {:?} for a Enum type {:?} ",
+                ordinal, base_ty
+            );
             return tcx.types.never;
         }
     } else if let TyKind::Tuple(tuple_types) = base_ty.kind() {
@@ -550,9 +556,7 @@ pub fn is_concrete(ty_kind: &TyKind<'_>) -> bool {
         | TyKind::FnDef(_, gen_args)
         | TyKind::Coroutine(_, gen_args)
         | TyKind::CoroutineWitness(_, gen_args)
-        | TyKind::Alias(_, rustc_middle::ty::AliasTy { args: gen_args, .. }) => {
-            are_concrete(gen_args)
-        }
+        | TyKind::Alias(_, rustc_middle::ty::AliasTy { args: gen_args, .. }) => are_concrete(gen_args),
         TyKind::Tuple(types) => types.iter().all(|t| is_concrete(t.kind())),
         TyKind::Bound(..)
         | TyKind::Dynamic(..)
@@ -579,7 +583,8 @@ pub fn is_fn_trait(tcx: TyCtxt<'_>, id: DefId) -> bool {
 pub fn is_dynamic_fn_trait<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
     if let TyKind::Dynamic(trait_data, ..) = ty.kind() {
         if let Some(principal) = trait_data.principal() {
-            let principal = tcx.normalize_erasing_late_bound_regions(ParamEnv::reveal_all(), principal);
+            let principal =
+                tcx.normalize_erasing_late_bound_regions(TypingEnv::fully_monomorphized(), principal);
             return is_fn_trait(tcx, principal.def_id);
         }
     }
@@ -596,9 +601,9 @@ pub fn is_fn_once_output<'tcx>(tcx: TyCtxt<'tcx>, id: DefId) -> bool {
 
 pub fn is_fn_once_call_once<'tcx>(tcx: TyCtxt<'tcx>, id: DefId) -> bool {
     matches!(
-        KnownNamesCache::get_known_name_for(tcx, id), 
+        KnownNamesCache::get_known_name_for(tcx, id),
         KnownNames::StdOpsFunctionFnOnceCallOnce
-    ) 
+    )
 }
 
 /// Returns true if the given type is a reference (or raw pointer) to a collection type, in which
@@ -606,7 +611,7 @@ pub fn is_fn_once_call_once<'tcx>(tcx: TyCtxt<'tcx>, id: DefId) -> bool {
 /// tracking a slice of the underlying collection.
 pub fn is_slice_pointer<'tcx>(ty: Ty<'tcx>) -> bool {
     match ty.kind() {
-        TyKind::RawPtr(TypeAndMut { ty: target, .. }) | TyKind::Ref(_, target, _) => {
+        TyKind::RawPtr(target, ..) | TyKind::Ref(_, target, _) => {
             // Pointers to sized arrays are thin pointers.
             matches!(target.kind(), TyKind::Slice(..) | TyKind::Str)
         }
@@ -617,7 +622,7 @@ pub fn is_slice_pointer<'tcx>(ty: Ty<'tcx>) -> bool {
 /// Returns true if the given type is a reference (or raw pointer) to a dynamic type
 pub fn is_dynamic_pointer<'tcx>(ty: Ty<'tcx>) -> bool {
     match ty.kind() {
-        TyKind::RawPtr(TypeAndMut { ty: target, .. }) | TyKind::Ref(_, target, _) => {
+        TyKind::RawPtr(target, ..) | TyKind::Ref(_, target, _) => {
             // Pointers to sized arrays are thin pointers.
             matches!(target.kind(), TyKind::Dynamic(..))
         }
@@ -628,7 +633,7 @@ pub fn is_dynamic_pointer<'tcx>(ty: Ty<'tcx>) -> bool {
 /// Returns true if the given type is a reference (or raw pointer) to a foreign type
 pub fn is_foreign_pointer<'tcx>(ty: Ty<'tcx>) -> bool {
     match ty.kind() {
-        TyKind::RawPtr(TypeAndMut { ty: target, .. }) | TyKind::Ref(_, target, _) => {
+        TyKind::RawPtr(target, ..) | TyKind::Ref(_, target, _) => {
             // Pointers to sized arrays are thin pointers.
             matches!(target.kind(), TyKind::Foreign(..))
         }
@@ -665,12 +670,11 @@ pub fn remove_transparent_wrapper<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Opti
     if let TyKind::Adt(def, args) = ty.kind() {
         if def.repr().transparent() {
             if def.is_union() || def.is_struct() {
-                let param_env = rustc_middle::ty::ParamEnv::reveal_all();
+                let param_env = rustc_middle::ty::TypingEnv::fully_monomorphized();
                 let variant = def.variants().iter().next().expect("at least one variant");
                 let non_zst_field = variant.fields.iter().enumerate().find(|(_i, field)| {
                     let field_ty = tcx.type_of(field.did).skip_binder();
-                    let is_zst = layout_of(tcx, param_env, field_ty)
-                        .map_or(false, |layout| layout.is_zst());
+                    let is_zst = layout_of(tcx, param_env, field_ty).map_or(false, |layout| layout.is_zst());
                     !is_zst
                 });
                 if let Some((i, field)) = non_zst_field {
@@ -694,7 +698,11 @@ pub fn is_transparent_wrapper(ty: Ty) -> bool {
     };
 }
 
-pub fn function_return_type<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, gen_args: GenericArgsRef<'tcx>) -> Ty<'tcx> {
+pub fn function_return_type<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    gen_args: GenericArgsRef<'tcx>,
+) -> Ty<'tcx> {
     let fn_sig = tcx.fn_sig(def_id);
     let ret_type = fn_sig.skip_binder().output().skip_binder();
     let generic_args = gen_args.iter().map(|t| GenericArgE::from(&t)).collect();
@@ -702,7 +710,11 @@ pub fn function_return_type<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId, gen_args: Ge
     substs_specializer.specialize_generic_argument_type(ret_type)
 }
 
-pub fn closure_return_type<'tcx>(tcx: TyCtxt<'tcx>, _def_id: DefId, gen_args: GenericArgsRef<'tcx>) -> Ty<'tcx> {
+pub fn closure_return_type<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    _def_id: DefId,
+    gen_args: GenericArgsRef<'tcx>,
+) -> Ty<'tcx> {
     let fn_sig = gen_args.as_closure().sig();
     let ret_type = fn_sig.skip_binder().output();
     let generic_args = gen_args.iter().map(|t| GenericArgE::from(&t)).collect();
@@ -728,7 +740,7 @@ pub fn closure_field_types<'tcx>(ty: Ty<'tcx>) -> Vec<Ty<'tcx>> {
     }
 }
 
-/// Returns a vector of field projections paired with their corresponding types contained in the given type 
+/// Returns a vector of field projections paired with their corresponding types contained in the given type
 pub fn projections_and_types<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Vec<(ProjectionElems, Ty<'tcx>)> {
     let mut fields = Vec::new();
     match ty.kind() {
@@ -919,10 +931,10 @@ pub fn get_pointer_projections<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Vec<(Pr
 #[inline]
 pub fn get_array_length<'tcx>(
     tcx: TyCtxt<'tcx>,
-    param_env: ParamEnv<'tcx>,
+    param_env: TypingEnv<'tcx>,
     length: &'tcx Const<'tcx>,
 ) -> usize {
-    if let Some(val) = length.try_eval_target_usize(tcx, param_env) {
+    if let Some(val) = length.try_to_target_usize(tcx) {
         val as usize
     } else {
         // if the value cannot be evaluated or doesn’t contain a valid usize,
@@ -935,30 +947,30 @@ pub fn get_array_length<'tcx>(
 #[inline]
 pub fn layout_of<'tcx>(
     tcx: TyCtxt<'tcx>,
-    param_env: ParamEnv<'tcx>,
+    param_env: TypingEnv<'tcx>,
     ty: Ty<'tcx>,
 ) -> std::result::Result<
     rustc_middle::ty::layout::TyAndLayout<'tcx>,
     &'tcx rustc_middle::ty::layout::LayoutError<'tcx>,
 > {
-    tcx.layout_of(param_env.and(ty))
+    tcx.layout_of(param_env.as_query_input(ty))
 }
 
 /// Returns the size for the given type
 #[inline]
-pub fn size_of<'tcx>(tcx: TyCtxt<'tcx>, param_env: ParamEnv<'tcx>, ty: Ty<'tcx>) -> usize {
+pub fn size_of<'tcx>(tcx: TyCtxt<'tcx>, param_env: TypingEnv<'tcx>, ty: Ty<'tcx>) -> usize {
     let layout = layout_of(tcx, param_env, ty)
         .expect("Failed to get the layout of the type.")
         .layout;
     layout.size().bytes_usize()
 }
 
-/// Given an object that may contain nested objects, flatten it by extracting all the bottom-level subobjects. 
+/// Given an object that may contain nested objects, flatten it by extracting all the bottom-level subobjects.
 /// This function returns a vector of tuples, each including a subobject's memory offset from the base object,
 /// its path representation and its type.
 pub fn flatten_fields<'tcx>(
     tcx: TyCtxt<'tcx>,
-    param_env: ParamEnv<'tcx>,
+    param_env: TypingEnv<'tcx>,
     path: Rc<Path>,
     path_ty: Ty<'tcx>,
 ) -> Vec<(usize, Rc<Path>, Ty<'tcx>)> {
@@ -969,7 +981,7 @@ pub fn flatten_fields<'tcx>(
 
 fn flatten_fields_recursively<'tcx>(
     tcx: TyCtxt<'tcx>,
-    param_env: ParamEnv<'tcx>,
+    param_env: TypingEnv<'tcx>,
     path: Rc<Path>,
     path_ty: Ty<'tcx>,
     base_offset: usize,
@@ -990,7 +1002,7 @@ fn flatten_fields_recursively<'tcx>(
                 let non_zst_field = variant.fields.iter().enumerate().find(|(_i, field)| {
                     let field_ty = tcx.type_of(field.did).skip_binder();
                     let is_zst = tcx
-                        .layout_of(param_env.and(field_ty))
+                        .layout_of(param_env.as_query_input(field_ty))
                         .map_or(false, |layout| layout.is_zst());
                     !is_zst
                 });
@@ -1008,7 +1020,8 @@ fn flatten_fields_recursively<'tcx>(
                 }
                 return;
             }
-            if !adt_def.variants().is_empty() { // Struct
+            if !adt_def.variants().is_empty() {
+                // Struct
                 // The layout of an adt type is not guaranteed to be identical to the definition
                 // of the type. We need to flatten the fields according to the layout of fields
                 if let Ok(layout) = layout_of(tcx, param_env, path_ty) {
@@ -1034,9 +1047,9 @@ fn flatten_fields_recursively<'tcx>(
                                 flattened_fields,
                             );
                         }
-                    } 
+                    }
                 } else {
-                    // Todo: for a struct we fail to obtain its layout,  we can assume that all its fields 
+                    // Todo: for a struct we fail to obtain its layout,  we can assume that all its fields
                     // are stored sequentially in memory.
                     warn!("Failed to get the layout of the adt type: {:?}", path_ty);
                 }
@@ -1100,7 +1113,7 @@ fn flatten_fields_recursively<'tcx>(
             );
         }
         _ => {
-            // We do not further flatten a fat pointer (pointers to slice, str or dynamic types), which 
+            // We do not further flatten a fat pointer (pointers to slice, str or dynamic types), which
             // consists of data pointer and vtable pointer. This does not impact the soundness of the analysis.
             // For example, if we are going to transmute a slice reference type to (*const u32, usize),
             // we can propagate the pointees correctly while ignoring the length metadata.
@@ -1114,7 +1127,7 @@ pub fn fields_at_start_location<'tcx>(
     path: Rc<Path>,
     path_ty: Ty<'tcx>,
 ) -> Vec<(Rc<Path>, Ty<'tcx>)> {
-    let param_env = rustc_middle::ty::ParamEnv::reveal_all();
+    let param_env = rustc_middle::ty::TypingEnv::fully_monomorphized();
     let mut fields_at_start_location = Vec::new();
     find_fields_at_start_location(tcx, param_env, path, path_ty, &mut fields_at_start_location);
     return fields_at_start_location;
@@ -1122,7 +1135,7 @@ pub fn fields_at_start_location<'tcx>(
 
 fn find_fields_at_start_location<'tcx>(
     tcx: TyCtxt<'tcx>,
-    param_env: ParamEnv<'tcx>,
+    param_env: TypingEnv<'tcx>,
     path: Rc<Path>,
     path_ty: Ty<'tcx>,
     fields_at_start_location: &mut Vec<(Rc<Path>, Ty<'tcx>)>,
@@ -1179,7 +1192,7 @@ fn find_fields_at_start_location<'tcx>(
                                 );
                             }
                         }
-                    } 
+                    }
                 } else {
                     // Todo
                     // If we cannot obtain the layout of the struct, add the first field directly
@@ -1189,13 +1202,7 @@ fn find_fields_at_start_location<'tcx>(
         TyKind::Array(elem_ty, _) | TyKind::Slice(elem_ty) => {
             let index_path = Path::new_index(path);
             fields_at_start_location.push((index_path.clone(), *elem_ty));
-            find_fields_at_start_location(
-                tcx,
-                param_env,
-                index_path,
-                *elem_ty,
-                fields_at_start_location,
-            );
+            find_fields_at_start_location(tcx, param_env, index_path, *elem_ty, fields_at_start_location);
         }
         TyKind::Tuple(types) => {
             if let Ok(layout) = layout_of(tcx, param_env, path_ty) {
@@ -1222,7 +1229,7 @@ fn find_fields_at_start_location<'tcx>(
                             );
                         }
                     }
-                } 
+                }
             } else {
                 // Todo
                 warn!("Failed to get the layout of the tuple type: {:?}", path_ty);
@@ -1231,7 +1238,6 @@ fn find_fields_at_start_location<'tcx>(
         _ => {}
     }
 }
-
 
 /// Returns true if the two given types are equal after erasing regions
 pub fn equal_types<'tcx>(tcx: TyCtxt<'tcx>, ty1: Ty<'tcx>, ty2: Ty<'tcx>) -> bool {
@@ -1270,7 +1276,7 @@ pub fn equivalent_ptr_types<'tcx>(tcx: TyCtxt<'tcx>, ty1: Ty<'tcx>, ty2: Ty<'tcx
     // let fp: fn() = unsafe { std::mem::transmute(p) };
     // fp();         // Segmentation fault
     // ```
-    // If we cast a function's reference into a function pointer and call via the function pointer, 
+    // If we cast a function's reference into a function pointer and call via the function pointer,
     // it will lead to a segmentation fault.
     // The equivalence between two function pointers are determined by comparing their signatures.
     if ty1.is_fn_ptr() && ty2.is_fn_ptr() {
@@ -1281,7 +1287,7 @@ pub fn equivalent_ptr_types<'tcx>(tcx: TyCtxt<'tcx>, ty1: Ty<'tcx>, ty2: Ty<'tcx
     let deref_ty1 = get_dereferenced_type(ty1);
     let deref_ty2 = get_dereferenced_type(ty2);
     if !deref_ty1.is_any_ptr() || !deref_ty2.is_any_ptr() {
-        // We don't make cast or do type filtering when we propagate the points-to set to a dyn trait 
+        // We don't make cast or do type filtering when we propagate the points-to set to a dyn trait
         // pointer, therefore we treat a pointer and a dyn trait pointer as equilvalent pointers.
         if deref_ty1.is_trait() || deref_ty2.is_trait() {
             return true;
@@ -1368,9 +1374,7 @@ pub fn try_eval_path_type<'tcx>(acx: &mut AnalysisContext<'tcx, '_>, path: &Rc<P
                         }
                     }
                     PathSelector::Subslice { .. } => base_ty,
-                    PathSelector::Downcast(ordinal) => {
-                        get_downcast_type(acx.tcx, base_ty, (*ordinal).into())
-                    }
+                    PathSelector::Downcast(ordinal) => get_downcast_type(acx.tcx, base_ty, (*ordinal).into()),
                     PathSelector::Cast(type_index) => acx
                         .get_type_by_index(*type_index)
                         .expect("Casted type must have been cached."),
@@ -1440,12 +1444,12 @@ pub fn matched_fn_sig<'tcx>(tcx: TyCtxt<'tcx>, fn_sig1: PolyFnSig<'tcx>, fn_sig2
 pub fn strip_auto_traits<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
     if let TyKind::Dynamic(predicates, region, kind) = ty.kind() {
         let new_predicates = predicates.iter().filter(
-            |bound_pred: &rustc_middle::ty::Binder<'_, ExistentialPredicate<'tcx>>| {
-                match bound_pred.skip_binder() {
-                    ExistentialPredicate::AutoTrait(_) => false,
-                    _ => true,
-                }
-            }
+            |bound_pred: &rustc_middle::ty::Binder<'_, ExistentialPredicate<'tcx>>| match bound_pred
+                .skip_binder()
+            {
+                ExistentialPredicate::AutoTrait(_) => false,
+                _ => true,
+            },
         );
         Ty::new_dynamic(
             tcx,

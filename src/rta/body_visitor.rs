@@ -1,17 +1,17 @@
 use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
-use rustc_middle::mir;
 use rustc_middle::mir::interpret::{GlobalAlloc, Scalar};
-use rustc_middle::ty::{Ty, TyCtxt, TyKind, GenericArgsRef};
+use rustc_middle::mir::{self, Operand};
 use rustc_middle::ty::adjustment::PointerCoercion;
+use rustc_middle::ty::{GenericArgsRef, Ty, TyCtxt, TyKind};
 use rustc_span::source_map::Spanned;
 
 use log::*;
 use std::borrow::Borrow;
 use std::collections::HashSet;
 
-use crate::builder::{call_graph_builder, special_function_handler};
 use crate::builder::substs_specializer::SubstsSpecializer;
+use crate::builder::{call_graph_builder, special_function_handler};
 use crate::mir::analysis_context::AnalysisContext;
 use crate::mir::call_site::BaseCallSite;
 use crate::mir::function::FuncId;
@@ -32,16 +32,13 @@ pub struct BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
 
 impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
     pub fn new(
-        rta: &'rta mut RapidTypeAnalysis<'a, 'tcx, 'compilation>, 
+        rta: &'rta mut RapidTypeAnalysis<'a, 'tcx, 'compilation>,
         func_id: FuncId,
         mir: &'tcx mir::Body<'tcx>,
     ) -> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
         let func_ref = rta.acx.get_function_reference(func_id);
         debug!("Processing function {:?} {}", func_id, func_ref.to_string());
-        let substs_specializer = SubstsSpecializer::new(
-            rta.acx.tcx, 
-            func_ref.generic_args.clone()
-        );
+        let substs_specializer = SubstsSpecializer::new(rta.acx.tcx, func_ref.generic_args.clone());
 
         BodyVisitor {
             rta,
@@ -68,7 +65,7 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
         }
     }
 
-    fn visit_baisc_block(&mut self, bb: mir::BasicBlock,) {
+    fn visit_baisc_block(&mut self, bb: mir::BasicBlock) {
         let mir::BasicBlockData {
             ref statements,
             ref terminator,
@@ -96,25 +93,20 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
     /// Calls a specialized visitor for each kind of statement.
     fn visit_statement(&mut self, _location: mir::Location, statement: &mir::Statement<'tcx>) {
         // debug!("Visiting statement: {:?}", statement);
-        let mir::Statement {kind, source_info: _} = statement;
+        let mir::Statement { kind, source_info: _ } = statement;
         match kind {
-            mir::StatementKind::Assign(box (place, rvalue)) => {
-                self.visit_assign(place, rvalue)
-            }
+            mir::StatementKind::Assign(box (place, rvalue)) => self.visit_assign(place, rvalue),
             _ => (),
-        }   
+        }
     }
 
     fn visit_assign(&mut self, _place: &mir::Place<'tcx>, rvalue: &mir::Rvalue<'tcx>) {
         match rvalue {
             mir::Rvalue::Cast(cast_kind, operand, ty) => {
-                let specialized_ty = self.substs_specializer.specialize_generic_argument_type(
-                    *ty
-                );
+                let specialized_ty = self.substs_specializer.specialize_generic_argument_type(*ty);
                 let source_ty = self.get_rustc_type_for_operand(operand);
                 match specialized_ty.kind() {
-                    TyKind::RawPtr(rustc_middle::ty::TypeAndMut {ty, ..}) 
-                    | TyKind::Ref(_, ty, _) => {
+                    TyKind::RawPtr(ty, ..) | TyKind::Ref(_, ty, _) => {
                         if matches!(ty.kind(), TyKind::Dynamic(..)) {
                             let src_deref_type = type_util::get_dereferenced_type(source_ty);
                             if matches!(src_deref_type.kind(), TyKind::Dynamic(..)) {
@@ -125,36 +117,47 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
                             }
                         }
                     }
-                    TyKind::FnPtr(..) => {
-                        match source_ty.kind() {
-                            TyKind::FnDef(..)
-                            | TyKind::Closure(..)
-                            | TyKind::Coroutine(..) => {
-                                debug!("Casting type {:?} to {:?}", source_ty, specialized_ty);
-                                self.rta.add_possible_fnptr_target(specialized_ty, source_ty);
-                            }
-                            _ => {}
+                    TyKind::FnPtr(..) => match source_ty.kind() {
+                        TyKind::FnDef(..) | TyKind::Closure(..) | TyKind::Coroutine(..) => {
+                            debug!("Casting type {:?} to {:?}", source_ty, specialized_ty);
+                            self.rta.add_possible_fnptr_target(specialized_ty, source_ty);
                         }
-                    }
+                        _ => {}
+                    },
                     _ => {
-                        // An unsize pointer cast can also convert structs containing thin pointers to structs 
-                        // containing fat pointers, e.g., Box<MyStruct> -> Box<dyn MyTrait>, and 
+                        // An unsize pointer cast can also convert structs containing thin pointers to structs
+                        // containing fat pointers, e.g., Box<MyStruct> -> Box<dyn MyTrait>, and
                         // NonNull<MyStruct> -> NonNull<dyn MyTrait>
-                        if matches!(cast_kind, mir::CastKind::PointerCoercion(PointerCoercion::Unsize)) {
+                        if matches!(
+                            cast_kind,
+                            mir::CastKind::PointerCoercion(PointerCoercion::Unsize, _)
+                        ) {
                             if let TyKind::Adt(_def, tgt_generic_args) = specialized_ty.kind() {
                                 if let TyKind::Adt(_def, src_generic_args) = source_ty.kind() {
-                                    for (tgt_generic_arg, src_generic_arg) in 
-                                        tgt_generic_args.iter().zip(src_generic_args.iter()) 
+                                    for (tgt_generic_arg, src_generic_arg) in
+                                        tgt_generic_args.iter().zip(src_generic_args.iter())
                                     {
                                         if let Some(tgt_generic_ty) = tgt_generic_arg.as_type() {
                                             if matches!(tgt_generic_ty.kind(), TyKind::Dynamic(..)) {
                                                 if let Some(src_generic_ty) = src_generic_arg.as_type() {
                                                     if matches!(src_generic_ty.kind(), TyKind::Dynamic(..)) {
-                                                        info!("trait_upcasting coercion from {:?} to {:?}", src_generic_ty, tgt_generic_ty);
-                                                        self.rta.add_trait_upcasting_relation(src_generic_ty, tgt_generic_ty);
+                                                        info!(
+                                                            "trait_upcasting coercion from {:?} to {:?}",
+                                                            src_generic_ty, tgt_generic_ty
+                                                        );
+                                                        self.rta.add_trait_upcasting_relation(
+                                                            src_generic_ty,
+                                                            tgt_generic_ty,
+                                                        );
                                                     } else {
-                                                        debug!("Casting type {:?} to {:?}", src_generic_ty, tgt_generic_ty);
-                                                        self.rta.add_possible_concrete_type(tgt_generic_ty, src_generic_ty);
+                                                        debug!(
+                                                            "Casting type {:?} to {:?}",
+                                                            src_generic_ty, tgt_generic_ty
+                                                        );
+                                                        self.rta.add_possible_concrete_type(
+                                                            tgt_generic_ty,
+                                                            src_generic_ty,
+                                                        );
                                                     }
                                                 }
                                             }
@@ -178,7 +181,7 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
     ) {
         match kind {
             mir::TerminatorKind::Call {
-                func, 
+                func,
                 args,
                 destination,
                 target: _,
@@ -186,13 +189,11 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
                 call_source: _,
                 fn_span: _,
             } => self.visit_call(func, args, destination, location),
-            mir::TerminatorKind::InlineAsm { 
+            mir::TerminatorKind::InlineAsm {
                 template: _,
                 operands: _,
-                destination: _, 
-                .. 
-            } => {
-            },
+                ..
+            } => {}
             _ => {}
         }
     }
@@ -201,32 +202,29 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
     ///
     /// #Arguments
     /// * `func` - The function that’s being called
-    /// * `args` - Arguments the function is called with. These are owned by the callee, which is 
-    /// free to modify them. This allows the memory occupied by "by-value" arguments to be reused 
+    /// * `args` - Arguments the function is called with. These are owned by the callee, which is
+    /// free to modify them. This allows the memory occupied by "by-value" arguments to be reused
     /// across function calls without duplicating the contents.
     /// * `destination` - Destination for the return value. If some, the call returns a value.
     fn visit_call(
         &mut self,
         func: &mir::Operand<'tcx>,
-        args: &Vec<Spanned<mir::Operand<'tcx>>>,
+        args: &Box<[Spanned<Operand<'tcx>>]>,
         _destination: &mir::Place<'tcx>,
-        location: mir::Location
+        location: mir::Location,
     ) {
         match func {
-            mir::Operand::Constant(box constant) => {
-                match constant.ty().kind() {
-                    TyKind::Closure(callee_def_id, gen_args)
-                    | TyKind::FnDef(callee_def_id, gen_args)
-                    | TyKind::Coroutine(callee_def_id, gen_args) => {
-                        self.resolve_call(callee_def_id, gen_args, location, args)
-                    }
-                    _ => {
-                        error!("Unexpected call: {:?}", constant);
-                    }
+            mir::Operand::Constant(box constant) => match constant.ty().kind() {
+                TyKind::Closure(callee_def_id, gen_args)
+                | TyKind::FnDef(callee_def_id, gen_args)
+                | TyKind::Coroutine(callee_def_id, gen_args) => {
+                    self.resolve_call(callee_def_id, gen_args, location, args)
                 }
-            }
-            mir::Operand::Copy(place)
-            | mir::Operand::Move(place) => {
+                _ => {
+                    error!("Unexpected call: {:?}", constant);
+                }
+            },
+            mir::Operand::Copy(place) | mir::Operand::Move(place) => {
                 let fn_item_ty = self.get_rustc_type_for_place(place);
                 assert!(fn_item_ty.is_fn());
                 match fn_item_ty.kind() {
@@ -247,11 +245,11 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
     }
 
     fn resolve_call(
-        &mut self, 
-        callee_def_id: &DefId, 
+        &mut self,
+        callee_def_id: &DefId,
         gen_args: &GenericArgsRef<'tcx>,
         location: mir::Location,
-        _args: &Vec<Spanned<mir::Operand<'tcx>>>,
+        _args: &Box<[Spanned<Operand<'tcx>>]>,
     ) {
         // Specialize callee's substs from known generic types
         let gen_args = self.substs_specializer.specialize_generic_args(gen_args);
@@ -259,21 +257,23 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
 
         if special_function_handler::is_specially_handled_function(self.acx(), *callee_def_id) {
             let callsite = BaseCallSite::new(self.func_id, location);
-            
+
             // Special handlings for thread spawn functions
-            if matches!(self.acx().get_known_name_for(*callee_def_id), KnownNames::StdThreadBuilderSpawnUnchecked) {
+            if matches!(
+                self.acx().get_known_name_for(*callee_def_id),
+                KnownNames::StdThreadBuilderSpawnUnchecked
+            ) {
                 let mut new_location = location;
                 new_location.statement_index += 1;
                 let fn_once_defid = self.tcx().require_lang_item(LangItem::FnOnce, None);
                 self.inline_indirectly_called_function(&fn_once_defid, &gen_args, new_location);
             }
 
-            let (callee_def_id, gen_args) = match call_graph_builder::try_to_devirtualize(
-                self.tcx(), *callee_def_id, gen_args
-            ) {
-                Some((callee_def_id, gen_args)) => (callee_def_id, gen_args),
-                None => (*callee_def_id, gen_args),
-            };
+            let (callee_def_id, gen_args) =
+                match call_graph_builder::try_to_devirtualize(self.tcx(), *callee_def_id, gen_args) {
+                    Some((callee_def_id, gen_args)) => (callee_def_id, gen_args),
+                    None => (*callee_def_id, gen_args),
+                };
             let callee_func_id = self.acx().get_func_id(callee_def_id, gen_args);
             self.rta.add_static_callsite(callsite);
             self.rta.add_call_edge(callsite, callee_func_id);
@@ -288,15 +288,14 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
             return;
         }
 
-        if !util::is_trait_method(self.tcx(), *callee_def_id) 
-        {
+        if !util::is_trait_method(self.tcx(), *callee_def_id) {
             // Static functions or methods or associated functions not declared on a trait.
             let callee_func_id = self.acx().get_func_id(*callee_def_id, gen_args);
             let callsite = BaseCallSite::new(self.func_id, location);
             self.rta.add_static_callsite(callsite);
             self.rta.add_call_edge(callsite, callee_func_id);
-        } else if let Some((callee_def_id, callee_substs)) = 
-            call_graph_builder::try_to_devirtualize(self.tcx(), *callee_def_id, gen_args) 
+        } else if let Some((callee_def_id, callee_substs)) =
+            call_graph_builder::try_to_devirtualize(self.tcx(), *callee_def_id, gen_args)
         {
             // Methods or associated functions declared on a trait.
             // The called instance can be resolved at compile time.
@@ -314,37 +313,36 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
     }
 
     fn resolve_fntrait_call(
-        &mut self, 
-        callee_def_id: &DefId, 
+        &mut self,
+        callee_def_id: &DefId,
         gen_args: &GenericArgsRef<'tcx>,
         location: mir::Location,
     ) {
-        // The fn_traits feature allows for implementation of the Fn* traits for 
+        // The fn_traits feature allows for implementation of the Fn* traits for
         // creating custom closure-like types. We first try to devirtualize the callee function
         // https://doc.rust-lang.org/beta/unstable-book/library-features/fn-traits.html
-        let param_env = rustc_middle::ty::ParamEnv::reveal_all();
+        let param_env = rustc_middle::ty::TypingEnv::fully_monomorphized();
         // Instance::resolve panics if try_normalize_erasing_regions returns an error.
         // It is hard to figure out exactly when this will be the case.
-        if self.tcx().try_normalize_erasing_regions(param_env, *gen_args).is_err() {
-            warn!("Could not resolve fntrait call: {:?}, {:?}", callee_def_id, gen_args);
+        if self
+            .tcx()
+            .try_normalize_erasing_regions(param_env, *gen_args)
+            .is_err()
+        {
+            warn!(
+                "Could not resolve fntrait call: {:?}, {:?}",
+                callee_def_id, gen_args
+            );
             return;
         }
-        let resolved_instance = rustc_middle::ty::Instance::resolve(
-            self.tcx(),
-            param_env,
-            *callee_def_id,
-            gen_args,
-        );
+        let resolved_instance =
+            rustc_middle::ty::Instance::try_resolve(self.tcx(), param_env, *callee_def_id, gen_args);
         if let Ok(Some(instance)) = resolved_instance {
             let resolved_def_id = instance.def.def_id();
 
             // If it is a call to a closure, inline the closure call.
-            if self.tcx().is_closure_or_coroutine(resolved_def_id) {
-                self.inline_indirectly_called_function(
-                    callee_def_id,
-                    gen_args,
-                    location,
-                );
+            if self.tcx().is_closure_like(resolved_def_id) {
+                self.inline_indirectly_called_function(callee_def_id, gen_args, location);
                 return;
             }
 
@@ -354,11 +352,7 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
                 // ops::function::Fn*::call* for FnDef, FnPtr, Dynamic... types are unavailable
                 // Try to inline the indirect call for these types
                 if self.acx().def_in_ops_func_namespace(resolved_def_id) {
-                    self.inline_indirectly_called_function(
-                        callee_def_id,
-                        gen_args,
-                        location,
-                    );
+                    self.inline_indirectly_called_function(callee_def_id, gen_args, location);
                 } else {
                     warn!("Unavailable mir for def_id: {:?}", resolved_def_id);
                 }
@@ -382,17 +376,20 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
     ///
     /// All of this happens in code that is not encoded as MIR, so we need built in support for it.
     fn inline_indirectly_called_function(
-        &mut self, 
-        callee_def_id: &DefId, 
+        &mut self,
+        callee_def_id: &DefId,
         gen_args: &GenericArgsRef<'tcx>,
         location: mir::Location,
     ) {
         // If the first substution is a closure or FnDef, we can inline the closure call directly.
         // The substs should have been specialized when added to the type cache.
-        let first_subst_ty = gen_args.types().next().expect("Expect type substition in Fn* invocation");
+        let first_subst_ty = gen_args
+            .types()
+            .next()
+            .expect("Expect type substition in Fn* invocation");
         match first_subst_ty.kind() {
             TyKind::FnDef(def_id, substs) => {
-                // Fn*::call* itself cannot be the first argument as it is a trait method without 
+                // Fn*::call* itself cannot be the first argument as it is a trait method without
                 // a implementation, therefore we do not need to worry about the recursive std_ops_func_call.
                 let (def_id, substs) = call_graph_builder::resolve_fn_def(self.tcx(), *def_id, substs);
                 let callee_func_id = self.acx().get_func_id(def_id, substs);
@@ -401,8 +398,7 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
                 self.rta.add_static_callsite(callsite);
                 self.rta.add_call_edge(callsite, callee_func_id);
             }
-            TyKind::Closure(def_id, substs)
-            | TyKind::Coroutine(def_id, substs) => {        
+            TyKind::Closure(def_id, substs) | TyKind::Coroutine(def_id, substs) => {
                 // Set up a callsite
                 let callsite = BaseCallSite::new(self.func_id, location);
                 let callee_func_id = self.acx().get_func_id(*def_id, substs);
@@ -417,7 +413,8 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
             // e.g. &dyn FnMut(..)
             TyKind::Dynamic(..) => {
                 let callsite = BaseCallSite::new(self.func_id, location);
-                self.rta.add_dyn_fntrait_callsite(callsite, *callee_def_id, gen_args);
+                self.rta
+                    .add_dyn_fntrait_callsite(callsite, *callee_def_id, gen_args);
             }
             _ => {
                 error!("Unexpected first argument type in std::ops::call!");
@@ -427,15 +424,12 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
 
     fn get_rustc_type_for_operand(&mut self, operand: &mir::Operand<'tcx>) -> Ty<'tcx> {
         let ty = match operand {
-            mir::Operand::Copy(place)
-            | mir::Operand::Move(place) => {
-                self.get_rustc_type_for_place(place)
-            }
+            mir::Operand::Copy(place) | mir::Operand::Move(place) => self.get_rustc_type_for_place(place),
             mir::Operand::Constant(const_op) => {
                 let mir::ConstOperand { const_, .. } = const_op.borrow();
                 let ty = match const_ {
                     // This constant came from the type system
-                    mir::Const::Ty(_c) => const_.ty(),
+                    mir::Const::Ty(_c, _) => const_.ty(),
                     // An unevaluated mir constant which is not part of the type system.
                     mir::Const::Unevaluated(c, ty) => {
                         self.visit_unevaluated_const(c, *ty);
@@ -447,9 +441,7 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
                         *ty
                     }
                 };
-                self.substs_specializer.specialize_generic_argument_type(
-                    ty
-                )
+                self.substs_specializer.specialize_generic_argument_type(ty)
             }
         };
         match ty.kind() {
@@ -462,11 +454,7 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
         }
     }
 
-    fn visit_unevaluated_const(
-        &mut self,
-        unevaluated: &mir::UnevaluatedConst<'tcx>,
-        ty: Ty<'tcx>,
-    ) {
+    fn visit_unevaluated_const(&mut self, unevaluated: &mir::UnevaluatedConst<'tcx>, ty: Ty<'tcx>) {
         debug!("Visiting unevaluated constant: {unevaluated:?} {ty:?}");
         if let Some(_promoted) = unevaluated.promoted {
             return;
@@ -475,9 +463,9 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
         let mut def_id = unevaluated.def;
         let args = self.substs_specializer.specialize_generic_args(unevaluated.args);
         if !args.is_empty() {
-            let param_env = rustc_middle::ty::ParamEnv::reveal_all();
+            let param_env = rustc_middle::ty::TypingEnv::fully_monomorphized();
             if let Ok(Some(instance)) =
-                rustc_middle::ty::Instance::resolve(self.tcx(), param_env, def_id, args)
+                rustc_middle::ty::Instance::try_resolve(self.tcx(), param_env, def_id, args)
             {
                 def_id = instance.def.def_id();
             }
@@ -502,9 +490,9 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
     }
 
     fn get_rustc_type_for_place(&self, place: &mir::Place<'tcx>) -> Ty<'tcx> {
-        let local_ty = self.substs_specializer.specialize_generic_argument_type(
-            self.mir.local_decls[place.local].ty
-        );
+        let local_ty = self
+            .substs_specializer
+            .specialize_generic_argument_type(self.mir.local_decls[place.local].ty);
 
         if place.projection.is_empty() {
             local_ty
@@ -513,34 +501,31 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
         }
     }
 
-    fn visit_projection_type(
-        &self,
-        base_ty: Ty<'tcx>,
-        projection: &[mir::PlaceElem<'tcx>],
-    ) -> Ty<'tcx> {
+    fn visit_projection_type(&self, base_ty: Ty<'tcx>, projection: &[mir::PlaceElem<'tcx>]) -> Ty<'tcx> {
         let mut ty = base_ty;
         for elem in projection.iter() {
             match elem {
-                // We don't need to specialize the type during iteration, as the type must be specific 
+                // We don't need to specialize the type during iteration, as the type must be specific
                 // enough when it has projections.
                 mir::ProjectionElem::Deref => {
                     ty = type_util::get_dereferenced_type(ty);
                 }
                 mir::ProjectionElem::Field(_, field_ty) => {
                     // ty = *field_ty;
-                    ty = self.substs_specializer.specialize_generic_argument_type(*field_ty);
+                    ty = self
+                        .substs_specializer
+                        .specialize_generic_argument_type(*field_ty);
                 }
                 mir::ProjectionElem::Index(..) | mir::ProjectionElem::ConstantIndex { .. } => {
                     ty = type_util::get_element_type(self.tcx(), ty);
                 }
                 mir::ProjectionElem::Downcast(_, variant_idx) => {
                     ty = type_util::get_downcast_type(self.tcx(), ty, *variant_idx);
-                }   
-                mir::ProjectionElem::Subslice { .. } => { 
+                }
+                mir::ProjectionElem::Subslice { .. } => {
                     continue;
                 }
-                mir::ProjectionElem::OpaqueCast(_new_ty) 
-                | mir::ProjectionElem::Subtype(_new_ty) => {
+                mir::ProjectionElem::OpaqueCast(_new_ty) | mir::ProjectionElem::Subtype(_new_ty) => {
                     // Todo
                     continue;
                 }
@@ -548,5 +533,4 @@ impl<'a, 'rta, 'tcx, 'compilation> BodyVisitor<'a, 'rta, 'tcx, 'compilation> {
         }
         ty
     }
-
 }

@@ -13,7 +13,7 @@ use std::rc::Rc;
 use rustc_hir::def_id::DefId;
 use rustc_hir::lang_items::LangItem;
 use rustc_middle::mir;
-use rustc_middle::ty::{List, GenericArgsRef, Ty, TyCtxt, TyKind};
+use rustc_middle::ty::{GenericArgsRef, List, Ty, TyCtxt, TyKind};
 
 use crate::builder::fpag_builder::FuncPAGBuilder;
 use crate::mir::analysis_context::AnalysisContext;
@@ -87,7 +87,7 @@ pub fn is_specially_handled_function(acx: &mut AnalysisContext, def_id: DefId) -
 }
 
 /// Handling calls to special functions.
-/// 
+///
 /// Returns true if this callee function is handled as a special function.
 /// If the return result is false, we need to continue with the normal logic.
 pub fn handled_as_special_function_call<'tcx>(
@@ -133,8 +133,7 @@ pub fn handled_as_special_function_call<'tcx>(
             handle_offset(fpb, args, destination);
             return true;
         }
-        KnownNames::StdPtrConstPtrCast 
-        | KnownNames::StdPtrMutPtrCast  => {
+        KnownNames::StdPtrConstPtrCast | KnownNames::StdPtrMutPtrCast => {
             handle_ptr_cast(fpb, args, destination);
             return true;
         }
@@ -174,7 +173,6 @@ pub fn handled_as_special_function_call<'tcx>(
     }
 }
 
-
 /// Handles the call to the intrinsics `Transmute` function.
 fn handle_transmute<'tcx>(
     fpb: &mut FuncPAGBuilder<'_, 'tcx, '_>,
@@ -192,23 +190,18 @@ fn handle_transmute<'tcx>(
     fpb.copy_and_transmute(source_path, source_rustc_type, target_path, target_rustc_type);
 }
 
-
 /// Handles the call to the `offset` function, such as `std::ptr::mut_ptr::offset(_1: *mut T, _2: isize)`.
-/// The offset function returns the address computed from the based address and the offset, and is commonly 
+/// The offset function returns the address computed from the based address and the offset, and is commonly
 /// used in vector's read/write operations.
-fn handle_offset<'tcx>(
-    fpb: &mut FuncPAGBuilder<'_, 'tcx, '_>,
-    args: &Vec<Rc<Path>>,
-    destination: &Rc<Path>,
-) {
+fn handle_offset<'tcx>(fpb: &mut FuncPAGBuilder<'_, 'tcx, '_>, args: &Vec<Rc<Path>>, destination: &Rc<Path>) {
     // Adds an offset edge from the source path to the destination path.
     let source_path = args[0].clone();
     fpb.add_offset_edge(source_path, destination.clone());
 }
 
 /// `core::ptr::const_ptr::cast()` and `core::ptr::mut_ptr::cast()`.
-/// 
-/// The cast functions significantly impacts the analysis precision and efficiency 
+///
+/// The cast functions significantly impacts the analysis precision and efficiency
 /// when analyzed context-insensitively.
 fn handle_ptr_cast<'tcx>(
     fpb: &mut FuncPAGBuilder<'_, 'tcx, '_>,
@@ -219,7 +212,6 @@ fn handle_ptr_cast<'tcx>(
     let source_path = args[0].clone();
     fpb.add_cast_edge(source_path, destination.clone());
 }
-
 
 /// ```fn allocate_in(capacity: usize, init: AllocInit, alloc: A) -> Self```.
 /// ```RawVec<T, A: Allocator = Global> { ptr: Unique<T>, cap: usize, alloc: A, }```
@@ -232,13 +224,11 @@ fn handle_raw_vec_allocate_in<'tcx>(
 ) {
     let tcx = fpb.acx.tcx;
     let heap_object_path = Path::new_heap_obj(fpb.fpag.func_id, location);
-    fpb
-        .acx
+    fpb.acx
         .set_path_rustc_type(heap_object_path.clone(), tcx.types.u8);
 
     let generic_type = gen_args.get(0).expect("rustc type error").expect_ty();
-    fpb
-        .acx
+    fpb.acx
         .concretized_heap_objs
         .insert(heap_object_path.clone(), generic_type);
     let cast_heap_object_path = fpb
@@ -254,19 +244,14 @@ fn handle_raw_vec_allocate_in<'tcx>(
     ];
     let dst_ptr_path = Path::new_qualified(destination.clone(), projection);
     let const_ptr_type = const_rawptr_type(tcx, generic_type);
-    fpb
-        .acx
-        .set_path_rustc_type(dst_ptr_path.clone(), const_ptr_type);
+    fpb.acx.set_path_rustc_type(dst_ptr_path.clone(), const_ptr_type);
     // Instead of inserting an address_of address from heap_object to dst_ptr_path,
     // we create a auxiliary path as an intermediary
     // ```let aux: *const T = &heap_object;  dst.0.0.0 = aux;```
-    let aux = fpb
-        .acx
-        .create_aux_local(fpb.fpag.func_id, const_ptr_type);
+    let aux = fpb.acx.create_aux_local(fpb.fpag.func_id, const_ptr_type);
     fpb.add_addr_edge(cast_heap_object_path, aux.clone());
     fpb.add_direct_edge(aux, dst_ptr_path);
 }
-
 
 /// ```fn spawn_unchecked<'a, F, T>(self, f: F) -> io::Result<JoinHandle<T>>```.
 /// This function starts a new thread by calling external C function.
@@ -288,13 +273,7 @@ fn handle_thread_builder_spawn_unchecked<'tcx>(
     let aux_dst = fpb.create_aux_local(dst_ty);
     let mut new_location = location;
     new_location.statement_index += 1;
-    fpb.inline_indirectly_called_function(
-        &fn_once_defid,
-        gen_args,
-        new_args,
-        aux_dst,
-        new_location,
-    );
+    fpb.inline_indirectly_called_function(&fn_once_defid, gen_args, new_args, aux_dst, new_location);
 
     // Todo: Add edges from `aux_dst` to `destination`, to do so, we need to allocate a heap memory for the packet field.
     // Destination type: io::Result<JoinHandle<T>>, where struct JoinHandle<T>(JoinInner<'static, T>);
@@ -337,7 +316,7 @@ fn handle_unique_new_unchecked<'tcx>(
     fpb.add_direct_edge(args[0].clone(), dst_field_path);
 }
 
-/// ```fn std::result::Result::<T, E>::map_err(_1: std::result::Result<T, E>, _2: O) 
+/// ```fn std::result::Result::<T, E>::map_err(_1: std::result::Result<T, E>, _2: O)
 ///    -> std::result::Result<T, F>
 /// ```
 /// Handles as an assignment from `param_1.as_variant#0.0` to `ret.as_variant#0.0`.
@@ -358,12 +337,7 @@ fn handle_result_map_err<'tcx>(
         vec![PathSelector::Downcast(0), PathSelector::Field(0)],
     );
     let target_rustc_type = source_rustc_type;
-    fpb.add_internal_edges(
-        source_path,
-        source_rustc_type,
-        target_path,
-        target_rustc_type,
-    );
+    fpb.add_internal_edges(source_path, source_rustc_type, target_path, target_rustc_type);
 }
 
 #[allow(unused)]
@@ -383,22 +357,13 @@ fn handle_slice_index_index<'tcx>(
         .expect("rustc type error");
 
     if slice_ty == dst_ty {
-        fpb.add_internal_edges(
-            slice_path,
-            slice_ty,
-            destination.clone(),
-            dst_ty,
-        );
+        fpb.add_internal_edges(slice_path, slice_ty, destination.clone(), dst_ty);
         return true;
     }
     return false;
 }
 
-fn handle_unique_into_nonnull(
-    fpb: &mut FuncPAGBuilder,
-    args: &Vec<Rc<Path>>,
-    destination: &Rc<Path>,
-) {
+fn handle_unique_into_nonnull(fpb: &mut FuncPAGBuilder, args: &Vec<Rc<Path>>, destination: &Rc<Path>) {
     assert!(!matches!(args[0].value, PathEnum::QualifiedPath { .. }));
     let source_path = Path::new_field(args[0].clone(), 0);
     let source_rustc_type = type_util::try_eval_path_type(fpb.acx, &source_path).unwrap();
@@ -434,8 +399,7 @@ fn handle_alloc<'tcx>(
         | KnownNames::StdAllocAllocZeroed
         | KnownNames::StdAllocExchangeMalloc => {
             let heap_object_path = Path::new_heap_obj(fpb.fpag.func_id, location);
-            fpb
-                .acx
+            fpb.acx
                 .set_path_rustc_type(heap_object_path.clone(), tcx.types.u8);
             fpb.add_addr_edge(heap_object_path, destination.clone());
             true
@@ -444,8 +408,7 @@ fn handle_alloc<'tcx>(
         // If the allocation is successful, the result would be Result::Ok<NonNull<[u8]>>, Result::Err<AllocError> otherwise.
         KnownNames::StdAllocAllocatorAllocate | KnownNames::StdAllocAllocatorAllocateZeroed => {
             let heap_object_path = Path::new_heap_obj(fpb.fpag.func_id, location);
-            fpb
-                .acx
+            fpb.acx
                 .set_path_rustc_type(heap_object_path.clone(), tcx.types.u8);
             let cast_heap_object_path = fpb
                 .acx
@@ -458,8 +421,7 @@ fn handle_alloc<'tcx>(
                 PathSelector::Field(0),
             ];
             let qualified_path = Path::new_qualified(destination.clone(), projection);
-            fpb
-                .acx
+            fpb.acx
                 .set_path_rustc_type(qualified_path.clone(), const_u8_rawptr_type(tcx));
             // Instead of inserting an address_of address from heap_object to ((dst as Ok).0).0,
             // we create a auxiliary path as an intermediary
@@ -494,8 +456,7 @@ fn handle_alloc<'tcx>(
                 PathSelector::Field(0),
             ];
             let dst_ptr_path = Path::new_qualified(destination.clone(), projection);
-            fpb
-                .acx
+            fpb.acx
                 .set_path_rustc_type(dst_ptr_path.clone(), const_u8_rawptr_type(tcx));
             fpb.add_cast_edge(src_ptr_path, dst_ptr_path);
             true
@@ -516,7 +477,7 @@ fn is_std_ptr_unique<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
             let def_path_str = tcx.def_path_str(def.did());
             def_path_str == "std::ptr::Unique"
         }
-        _ => false
+        _ => false,
     }
 }
 
@@ -526,20 +487,17 @@ fn is_std_ptr_nonnull<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
             let def_path_str = tcx.def_path_str(def.did());
             def_path_str == "std::ptr::NonNull"
         }
-        _ => false
+        _ => false,
     }
 }
 
 fn const_rawptr_type<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-    tcx.mk_ty_from_kind(TyKind::RawPtr(rustc_middle::ty::TypeAndMut {
-        ty,
-        mutbl: rustc_middle::mir::Mutability::Not,
-    }))
+    tcx.mk_ty_from_kind(TyKind::RawPtr(ty, rustc_middle::mir::Mutability::Not))
 }
 
 fn const_u8_rawptr_type(tcx: TyCtxt) -> Ty {
-    tcx.mk_ty_from_kind(TyKind::RawPtr(rustc_middle::ty::TypeAndMut {
-        ty: tcx.mk_ty_from_kind(TyKind::Slice(tcx.types.u8)),
-        mutbl: rustc_middle::mir::Mutability::Not,
-    }))
+    tcx.mk_ty_from_kind(TyKind::RawPtr(
+        tcx.mk_ty_from_kind(TyKind::Slice(tcx.types.u8)),
+        rustc_middle::mir::Mutability::Not,
+    ))
 }

@@ -5,8 +5,8 @@
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::Promoted;
-use rustc_middle::ty::{GenericArg, GenericArgKind};
 use rustc_middle::ty::{Const, Ty};
+use rustc_middle::ty::{GenericArg, GenericArgKind};
 
 use crate::mir::context::ContextId;
 use std::rc::Rc;
@@ -19,7 +19,7 @@ rustc_index::newtype_index! {
     pub struct FuncId {}
 }
 
-/// Context-sensitive function consisting of a context id (cid) and a function id (func_id). 
+/// Context-sensitive function consisting of a context id (cid) and a function id (func_id).
 #[derive(Copy, Clone, Debug, Eq, PartialOrd, PartialEq, Hash, Ord)]
 pub struct CSFuncId {
     pub cid: ContextId,
@@ -39,7 +39,7 @@ impl From<CSFuncId> for FuncId {
 }
 
 /// Information that identifies a function instance.
-#[derive(Clone, Debug, Eq, PartialOrd, PartialEq, Hash, Ord)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct FunctionReference<'tcx> {
     /// The crate specific key that is used to identify the function in the current crate.
     pub def_id: DefId,
@@ -52,12 +52,49 @@ pub struct FunctionReference<'tcx> {
     pub promoted: Option<Promoted>,
 }
 
+impl<'tcx> PartialOrd for FunctionReference<'tcx> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<'tcx> Ord for FunctionReference<'tcx> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let self_idx = (self.def_id.krate.as_u32(), self.def_id.index.as_u32());
+        let other_idx = (other.def_id.krate.as_u32(), other.def_id.index.as_u32());
+        self_idx
+            .cmp(&other_idx)
+            .then(self.generic_args.cmp(&other.generic_args))
+            .then(self.promoted.cmp(&other.promoted))
+    }
+}
+
 /// Resembles the `GenericArgKind` type in rustc.
-#[derive(Clone, Debug, Eq, PartialOrd, PartialEq, Hash, Ord)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum GenericArgE<'tcx> {
     Region,
     Const(Const<'tcx>),
     Type(Ty<'tcx>),
+}
+
+impl<'tcx> PartialOrd for GenericArgE<'tcx> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<'tcx> Ord for GenericArgE<'tcx> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (GenericArgE::Region, GenericArgE::Region) => std::cmp::Ordering::Equal,
+            (GenericArgE::Region, _) => std::cmp::Ordering::Less,
+            (_, GenericArgE::Region) => std::cmp::Ordering::Greater,
+            (GenericArgE::Const(c1), GenericArgE::Const(c2)) => format!("{:?}", c1).cmp(&format!("{:?}", c2)),
+            (GenericArgE::Const(_), _) => std::cmp::Ordering::Less,
+            (_, GenericArgE::Const(_)) => std::cmp::Ordering::Greater,
+            (GenericArgE::Type(t1), GenericArgE::Type(t2)) => format!("{:?}", t1).cmp(&format!("{:?}", t2)),
+        }
+    }
 }
 
 impl<'tcx> From<&GenericArg<'tcx>> for GenericArgE<'tcx> {
@@ -100,7 +137,7 @@ impl<'tcx> ToString for FunctionReference<'tcx> {
     fn to_string(&self) -> String {
         let const_to_str = |c: &Const| -> String {
             if let Some(v) = c.try_to_scalar() {
-                return v.to_string();
+                return format!("{:?}", v);
             }
             return "_".to_string();
         };

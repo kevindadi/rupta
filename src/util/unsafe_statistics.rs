@@ -10,14 +10,14 @@ use std::io::{BufWriter, Write};
 
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::Visitor;
-use rustc_hir::Unsafety;
+use rustc_hir::Safety;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::CrateNum;
 
 use crate::graph::call_graph::CallGraph;
+use crate::mir::analysis_context::AnalysisContext;
 use crate::mir::call_site::BaseCallSite;
 use crate::mir::function::FuncId;
-use crate::mir::analysis_context::AnalysisContext;
 
 pub struct UnsafeStat<'pta, 'tcx, 'compilation> {
     acx: &'pta AnalysisContext<'tcx, 'compilation>,
@@ -30,7 +30,10 @@ pub struct UnsafeStat<'pta, 'tcx, 'compilation> {
 }
 
 impl<'pta, 'tcx, 'compilation> UnsafeStat<'pta, 'tcx, 'compilation> {
-    pub fn new(acx: &'pta AnalysisContext<'tcx, 'compilation>, call_graph: &CallGraph<FuncId, BaseCallSite>) -> Self {
+    pub fn new(
+        acx: &'pta AnalysisContext<'tcx, 'compilation>,
+        call_graph: &CallGraph<FuncId, BaseCallSite>,
+    ) -> Self {
         let mut caller_to_callees_map: HashMap<FuncId, HashSet<FuncId>> = HashMap::new();
         let mut callee_to_callers_map: HashMap<FuncId, HashSet<FuncId>> = HashMap::new();
         let graph = &call_graph.graph;
@@ -267,11 +270,11 @@ impl<'pta, 'tcx, 'compilation> UnsafeStat<'pta, 'tcx, 'compilation> {
             let is_declared_unsafe = match fn_ty.kind() {
                 rustc_middle::ty::FnDef(..) => {
                     let sig = fn_ty.fn_sig(self.acx.tcx);
-                    sig.unsafety() == Unsafety::Unsafe
+                    sig.safety() == Safety::Unsafe
                 }
                 rustc_middle::ty::Closure(_, substs) => {
                     let sig = substs.as_closure().sig();
-                    sig.unsafety() == Unsafety::Unsafe
+                    sig.safety() == Safety::Unsafe
                 }
                 _ => false,
             };
@@ -285,7 +288,7 @@ impl<'pta, 'tcx, 'compilation> UnsafeStat<'pta, 'tcx, 'compilation> {
             let hir_map = self.acx.tcx.hir();
             if let Some(local_def_id) = def_id.as_local() {
                 if let Some(body_id) = hir_map.maybe_body_owned_by(local_def_id) {
-                    let body = hir_map.body(body_id);
+                    let body = hir_map.body(body_id.id());
                     let mut bv = BodyVisitor {
                         contains_unsafe_block,
                         conservative,

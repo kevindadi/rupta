@@ -4,8 +4,8 @@
 // LICENSE file in the root directory of this source tree.
 
 //! The main routine of `rupta`.
-//! 
-//! Implemented as a stub that invokes the rust compiler with a call back to execute 
+//!
+//! Implemented as a stub that invokes the rust compiler with a call back to execute
 //! pointer analysis during rust compilation.
 
 #![feature(rustc_private)]
@@ -22,8 +22,7 @@ use rupta::util;
 use rupta::util::options::AnalysisOptions;
 
 fn main() {
-    let early_dcx =
-        rustc_session::EarlyDiagCtxt::new(rustc_session::config::ErrorOutputType::default());
+    let early_dcx = rustc_session::EarlyDiagCtxt::new(rustc_session::config::ErrorOutputType::default());
 
     // Initialize loggers.
     if env::var("RUSTC_LOG").is_ok() {
@@ -69,7 +68,10 @@ fn main() {
         rustc_command_line_arguments.extend(rustc_args);
 
         let sysroot: String = "--sysroot".into();
-        if !rustc_command_line_arguments.iter().any(|arg| arg.starts_with(&sysroot)) {
+        if !rustc_command_line_arguments
+            .iter()
+            .any(|arg| arg.starts_with(&sysroot))
+        {
             // Tell compiler where to find the std library and so on.
             // The compiler relies on the standard rustc driver to tell it, so we have to do likewise.
             rustc_command_line_arguments.push(sysroot);
@@ -77,19 +79,21 @@ fn main() {
         }
 
         let always_encode_mir: String = "always-encode-mir".into();
-        if !rustc_command_line_arguments.iter().any(|arg| arg.ends_with(&always_encode_mir))
+        if !rustc_command_line_arguments
+            .iter()
+            .any(|arg| arg.ends_with(&always_encode_mir))
         {
             // Tell compiler to emit MIR into crate for every function with a body.
             rustc_command_line_arguments.push("-Z".into());
             rustc_command_line_arguments.push(always_encode_mir);
         }
         debug!("rustc command line arguments: {:?}", rustc_command_line_arguments);
-        
+
         let mut callbacks = PTACallbacks::new(options);
         let compiler = rustc_driver::RunCompiler::new(&rustc_command_line_arguments, &mut callbacks);
         compiler.run()
     })
-    .and_then(|result| result);
+    .and_then(|result| Ok(result));
 
     let exit_code = match result {
         Ok(_) => rustc_driver::EXIT_SUCCESS,

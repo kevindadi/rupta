@@ -12,7 +12,7 @@ use super::points_to::PointsToSet;
 use crate::util::bit_vec::Idx;
 
 /// Basic points-to data structure.
-/// 
+///
 /// Given a key (variable/condition variable), return its points-to data (pts/context-sensitve pts).
 /// It is designed flexible for different context, heap and path sensitive analysis.
 ///  1. Context Insensitive:	Key --> Pointer, DataSet --> PointsTo
@@ -139,7 +139,9 @@ where
 }
 
 /// Diff points-to data.
-/// 
+/// 增量传播设计
+/// diff_pts_map:存储新发现但未传播的指向关系
+/// propa_pts_map:存储已经传播过的指向关系
 /// This is an optimisation on top of the base points-to data structure.
 /// The points-to information is propagated incrementally only for the different parts.
 pub struct DiffPTData<K, D, DS> {

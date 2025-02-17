@@ -8,17 +8,17 @@ use petgraph::graph::{DefaultIx, EdgeIndex, NodeIndex};
 use petgraph::Graph;
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::hash::Hash;
 use std::fmt::Debug;
+use std::hash::Hash;
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::Ty;
 
 use super::func_pag::FuncPAG;
 use crate::builder::fpag_builder;
+use crate::mir::analysis_context::AnalysisContext;
 use crate::mir::call_site::CallSiteS;
 use crate::mir::function::{FuncId, GenericArgE};
-use crate::mir::analysis_context::AnalysisContext;
 use crate::mir::path::{PathEnum, ProjectionElems};
 use crate::util::bit_vec::Idx;
 use crate::util::chunked_queue::{self, ChunkedQueue};
@@ -41,10 +41,14 @@ impl Idx for PAGNodeId {
 
 pub trait PAGPath: Clone + PartialEq + Eq + Hash + Debug {
     type FuncTy;
-    
+
     fn new_parameter(func: Self::FuncTy, ordinal: usize) -> Self;
     fn new_return_value(func: Self::FuncTy) -> Self;
-    fn new_aux_local_path<'tcx>(acx: &mut AnalysisContext<'tcx, '_>, func: Self::FuncTy, ty: Ty<'tcx>) -> Self;
+    fn new_aux_local_path<'tcx>(
+        acx: &mut AnalysisContext<'tcx, '_>,
+        func: Self::FuncTy,
+        ty: Ty<'tcx>,
+    ) -> Self;
     fn value(&self) -> &PathEnum;
     fn append_projection(&self, projection_elems: &ProjectionElems) -> Self;
     fn add_offset(&self, offset: usize) -> Self;
@@ -61,7 +65,6 @@ pub trait PAGPath: Clone + PartialEq + Eq + Hash + Debug {
     fn get_containing_func(&self) -> Option<Self::FuncTy>;
 }
 
-
 pub struct PAGNode<P: PAGPath> {
     path: P,
 }
@@ -75,7 +78,6 @@ impl<P: PAGPath> PAGNode<P> {
     pub fn path(&self) -> &P {
         &self.path
     }
-
 }
 
 pub struct PAGEdge {
@@ -301,7 +303,7 @@ impl<P: PAGPath> PAG<P> {
         self.offset_out_edges.entry(node_id).or_default().insert(out_edge);
     }
 
-    /// Adds an edge from `src` to `dst` according to the edge type. 
+    /// Adds an edge from `src` to `dst` according to the edge type.
     /// Returns the edge id if this edge is newly added to the graph.
     pub fn add_edge(&mut self, src: &P, dst: &P, kind: PAGEdgeEnum) -> Option<PAGEdgeId> {
         match kind {
@@ -319,8 +321,8 @@ impl<P: PAGPath> PAG<P> {
         let src_id = self.get_or_insert_node(src);
         let dst_id = self.get_or_insert_node(dst);
         if !self.contains_edge(src_id, dst_id, &PAGEdgeEnum::AddrPAGEdge) {
-            let edge = PAGEdge { 
-                kind: PAGEdgeEnum::AddrPAGEdge 
+            let edge = PAGEdge {
+                kind: PAGEdgeEnum::AddrPAGEdge,
             };
             let edge_id = self.graph.add_edge(src_id, dst_id, edge);
             self.addr_edges_queue.push(edge_id);
@@ -337,8 +339,8 @@ impl<P: PAGPath> PAG<P> {
         let src_id = self.get_or_insert_node(src);
         let dst_id = self.get_or_insert_node(dst);
         if !self.contains_edge(src_id, dst_id, &PAGEdgeEnum::DirectPAGEdge) {
-            let edge = PAGEdge { 
-                kind: PAGEdgeEnum::DirectPAGEdge 
+            let edge = PAGEdge {
+                kind: PAGEdgeEnum::DirectPAGEdge,
             };
             let edge_id = self.graph.add_edge(src_id, dst_id, edge);
 
@@ -398,8 +400,8 @@ impl<P: PAGPath> PAG<P> {
         let src_id = self.get_or_insert_node(src);
         let dst_id = self.get_or_insert_node(dst);
         if !self.contains_edge(src_id, dst_id, &PAGEdgeEnum::CastPAGEdge) {
-            let edge = PAGEdge { 
-                kind: PAGEdgeEnum::CastPAGEdge 
+            let edge = PAGEdge {
+                kind: PAGEdgeEnum::CastPAGEdge,
             };
             let edge_id = self.graph.add_edge(src_id, dst_id, edge);
 
@@ -415,8 +417,8 @@ impl<P: PAGPath> PAG<P> {
         let src_id = self.get_or_insert_node(src);
         let dst_id = self.get_or_insert_node(dst);
         if !self.contains_edge(src_id, dst_id, &PAGEdgeEnum::OffsetPAGEdge) {
-            let edge = PAGEdge { 
-                kind: PAGEdgeEnum::OffsetPAGEdge 
+            let edge = PAGEdge {
+                kind: PAGEdgeEnum::OffsetPAGEdge,
             };
             let edge_id = self.graph.add_edge(src_id, dst_id, edge);
 
@@ -457,7 +459,6 @@ impl<P: PAGPath> PAG<P> {
         }
         added_edges
     }
-
 
     #[inline]
     pub fn get_func_pag(&self, func_id: &FuncId) -> Option<&FuncPAG> {
@@ -523,10 +524,10 @@ impl<P: PAGPath> PAG<P> {
             if let Some(promoted_funcs) = self.promote_constants(acx, def_id, &vec![]) {
                 self.promoted_funcs_map.insert(func_id, promoted_funcs);
             }
-            
+
             // Build function pags for the static variable
             let mut fpag = FuncPAG::new(func_id);
-            let def = rustc_middle::ty::InstanceDef::Item(def_id);
+            let def = rustc_middle::ty::InstanceKind::Item(def_id);
             let mir = acx.tcx.instance_mir(def);
             let mut builder = fpag_builder::FuncPAGBuilder::new(acx, func_id, mir, &mut fpag);
             builder.build();
@@ -553,46 +554,47 @@ impl<P: PAGPath> PAG<P> {
             }
         }
         if promoted_func_ids.is_empty() {
-            None 
+            None
         } else {
             Some(promoted_func_ids)
         }
     }
-
 }
 
-
-impl<P: PAGPath> PAG<P> where P::FuncTy: Into<FuncId> + Copy {
-        /// Adds direct edges from the arguments to the parameters and from the return value to the destination value.
-        pub fn add_inter_procedural_edges(
-            &mut self,
-            acx: &mut AnalysisContext<'_, '_>,
-            callsite: &CallSiteS<P::FuncTy, P>,
-            callee: P::FuncTy,
-        ) -> Vec<PAGEdgeId> {
-            if !acx
-                .tcx
-                .is_mir_available(acx.get_function_reference(callee.into()).def_id)
-            {
-                return vec![];
-            }
-    
-            let mut added_edges = Vec::new();
-    
-            // add arg --> param edges.
-            for (i, arg) in callsite.args.iter().enumerate() {
-                // The source path can be a constant, we did not cache the type information for constants.
-                let arg_type = arg.try_eval_path_type(acx);
-                let param = PAGPath::new_parameter(callee, i + 1);
-                added_edges.extend(self.add_new_direct_edges(acx, arg, &param, arg_type));
-            }
-    
-            // add ret --> dst edge
-            let ret = PAGPath::new_return_value(callee);
-            let ret_type = callsite.destination.try_eval_path_type(acx);
-            let new_edges = self.add_new_direct_edges(acx, &ret, &callsite.destination, ret_type);
-            added_edges.extend(new_edges);
-    
-            added_edges
+impl<P: PAGPath> PAG<P>
+where
+    P::FuncTy: Into<FuncId> + Copy,
+{
+    /// Adds direct edges from the arguments to the parameters and from the return value to the destination value.
+    pub fn add_inter_procedural_edges(
+        &mut self,
+        acx: &mut AnalysisContext<'_, '_>,
+        callsite: &CallSiteS<P::FuncTy, P>,
+        callee: P::FuncTy,
+    ) -> Vec<PAGEdgeId> {
+        if !acx
+            .tcx
+            .is_mir_available(acx.get_function_reference(callee.into()).def_id)
+        {
+            return vec![];
         }
+
+        let mut added_edges = Vec::new();
+
+        // add arg --> param edges.
+        for (i, arg) in callsite.args.iter().enumerate() {
+            // The source path can be a constant, we did not cache the type information for constants.
+            let arg_type = arg.try_eval_path_type(acx);
+            let param = PAGPath::new_parameter(callee, i + 1);
+            added_edges.extend(self.add_new_direct_edges(acx, arg, &param, arg_type));
+        }
+
+        // add ret --> dst edge
+        let ret = PAGPath::new_return_value(callee);
+        let ret_type = callsite.destination.try_eval_path_type(acx);
+        let new_edges = self.add_new_direct_edges(acx, &ret, &callsite.destination, ret_type);
+        added_edges.extend(new_edges);
+
+        added_edges
+    }
 }

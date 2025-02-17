@@ -11,13 +11,13 @@ use std::time::Duration;
 use rustc_middle::ty::TyCtxt;
 
 use super::propagator::propagator::Propagator;
-use super::PointerAnalysis;
 use super::strategies::stack_filtering::StackFilter;
+use super::PointerAnalysis;
 use crate::graph::call_graph::CallGraph;
 use crate::graph::func_pag::FuncPAG;
-use crate::mir::call_site::{CallSite, BaseCallSite, CallType, AssocCallGroup};
-use crate::mir::function::FuncId;
 use crate::mir::analysis_context::AnalysisContext;
+use crate::mir::call_site::{AssocCallGroup, BaseCallSite, CallSite, CallType};
+use crate::mir::function::FuncId;
 use crate::mir::path::Path;
 use crate::pta::*;
 use crate::rta::rta::RapidTypeAnalysis;
@@ -92,9 +92,7 @@ impl<'pta, 'tcx, 'compilation> AndersenPTA<'pta, 'tcx, 'compilation> {
         while let Some(func_id) = self.rf_iter.next() {
             if !self.processed_funcs.contains(&func_id) {
                 let func_ref = self.acx.get_function_reference(func_id);
-                info!(
-                    "Processing function {:?} {}", func_id, func_ref.to_string(),
-                );
+                info!("Processing function {:?} {}", func_id, func_ref.to_string(),);
                 if self.pag.build_func_pag(self.acx, func_id) {
                     self.add_fpag_edges(func_id);
                     self.process_calls_in_fpag(func_id);
@@ -143,7 +141,8 @@ impl<'pta, 'tcx, 'compilation> AndersenPTA<'pta, 'tcx, 'compilation> {
         // For static dispatch callsites, the call target can be resolved directly.
         for (callsite, callee) in &fpag.static_dispatch_callsites {
             self.add_call_edge(callsite, callee);
-            self.call_graph.set_callsite_type(callsite.into(), CallType::StaticDispatch);
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::StaticDispatch);
         }
 
         // For special callsites, we have summary the effects. Therefore we only add call edge
@@ -151,25 +150,30 @@ impl<'pta, 'tcx, 'compilation> AndersenPTA<'pta, 'tcx, 'compilation> {
         for (callsite, callee) in &fpag.special_callsites {
             self.call_graph.add_edge(callsite.into(), func_id, *callee);
             // To fix: this may classify some special dynamic calls into static calls
-            self.call_graph.set_callsite_type(callsite.into(), CallType::StaticDispatch);
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::StaticDispatch);
         }
 
-        let mut dyn_node_id = |dyn_obj: &Rc<Path>| {
-           self.pag.get_or_insert_node(dyn_obj)
-        };
+        let mut dyn_node_id = |dyn_obj: &Rc<Path>| self.pag.get_or_insert_node(dyn_obj);
 
         // For std::ops::call, dynamic and fnptr callsites, add them to the dynamic_calls and fnptr_calls maps.
         for (dyn_fn_obj, callsite) in &fpag.dynamic_fntrait_callsites {
-            self.assoc_calls.add_dynamic_fntrait_call(dyn_node_id(dyn_fn_obj), callsite.clone());
-            self.call_graph.set_callsite_type(callsite.into(), CallType::DynamicFnTrait);
+            self.assoc_calls
+                .add_dynamic_fntrait_call(dyn_node_id(dyn_fn_obj), callsite.clone());
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::DynamicFnTrait);
         }
         for (dyn_var, callsite) in &fpag.dynamic_dispatch_callsites {
-            self.assoc_calls.add_dynamic_dispatch_call(dyn_node_id(dyn_var), callsite.clone());
-            self.call_graph.set_callsite_type(callsite.into(), CallType::DynamicDispatch);
+            self.assoc_calls
+                .add_dynamic_dispatch_call(dyn_node_id(dyn_var), callsite.clone());
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::DynamicDispatch);
         }
         for (fn_ptr, callsite) in &fpag.fnptr_callsites {
-            self.assoc_calls.add_fnptr_call(self.pag.get_or_insert_node(fn_ptr), callsite.clone());
-            self.call_graph.set_callsite_type(callsite.into(), CallType::FnPtr);
+            self.assoc_calls
+                .add_fnptr_call(self.pag.get_or_insert_node(fn_ptr), callsite.clone());
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::FnPtr);
         }
     }
 
@@ -191,7 +195,7 @@ impl<'pta, 'tcx, 'compilation> AndersenPTA<'pta, 'tcx, 'compilation> {
     fn add_call_edge(&mut self, callsite: &Rc<CallSite>, callee: &FuncId) {
         let caller = callsite.func;
         if !self.call_graph.add_edge(callsite.into(), caller, *callee) {
-            return; 
+            return;
         }
         let new_inter_proc_edges = self.pag.add_inter_procedural_edges(self.acx, callsite, *callee);
         for edge in new_inter_proc_edges {
@@ -206,14 +210,18 @@ impl<'pta, 'tcx, 'compilation> AndersenPTA<'pta, 'tcx, 'compilation> {
         }
     }
 
-    #[inline]
-    pub fn get_pt_data(&self) -> &DiffPTDataTy {
-        &self.pt_data
-    }
-
+    // #[inline]
+    // pub fn get_pt_data(&self) -> &DiffPTDataTy {
+    //     &self.pt_data
+    // }
 }
 
 impl<'pta, 'tcx, 'compilation> PointerAnalysis<'tcx, 'compilation> for AndersenPTA<'pta, 'tcx, 'compilation> {
+    #[inline]
+    fn get_pt_data(&self) -> &DiffPTDataTy {
+        &self.pt_data
+    }
+
     fn pre_analysis(&mut self) {
         if !self.acx.analysis_options.stack_filtering {
             return;
@@ -224,7 +232,8 @@ impl<'pta, 'tcx, 'compilation> PointerAnalysis<'tcx, 'compilation> for AndersenP
         self.pre_analysis_time += rta.analysis_time;
         self.stack_filter = Some(StackFilter::new(rta.call_graph));
         self.pre_analysis_time += self.stack_filter.as_ref().unwrap().fra_time();
-        println!("Pre-analysis time {}", 
+        println!(
+            "Pre-analysis time {}",
             humantime::format_duration(self.pre_analysis_time).to_string()
         );
     }
@@ -278,5 +287,4 @@ impl<'pta, 'tcx, 'compilation> PointerAnalysis<'tcx, 'compilation> for AndersenP
         let pta_stat = AndersenStat::new(self);
         pta_stat.dump_stats();
     }
-
 }

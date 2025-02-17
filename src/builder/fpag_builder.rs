@@ -8,6 +8,8 @@
 //! The Function PAG is part of the PAG for the whole program.
 
 use log::*;
+use rustc_span::sym::call_once;
+use serde_json::de;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter, Result};
@@ -195,6 +197,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             }
             mir::StatementKind::ConstEvalCounter => (),
             mir::StatementKind::Nop => (),
+            _ => {todo!()}
         }
     }
 
@@ -229,7 +232,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
                     match ty.kind() {
                         TyKind::Ref(..) | TyKind::RawPtr(..) => path,
                         TyKind::Adt(def, _args) if def.is_box() => {
-                            self.get_box_pointer_field(path, ty.boxed_ty())
+                            self.get_box_pointer_field(path, ty.boxed_ty().unwrap())
                         }
                         _ => unreachable!("CopyNonOverlapping is called on non-ptr operands."),
                     }
@@ -322,7 +325,6 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             mir::TerminatorKind::InlineAsm {
                 template: _,
                 operands: _,
-                destination: _,
                 ..
             } => {}
             _ => {}
@@ -332,7 +334,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
     /// Block ends with the call of a function.
     ///
     /// #Arguments
-    /// * `func` - The function that’s being called
+    /// * `func` - The function that's being called
     /// * `args` - Arguments the function is called with. These are owned by the callee, which is
     /// free to modify them. This allows the memory occupied by "by-value" arguments to be reused
     /// across function calls without duplicating the contents.
@@ -340,7 +342,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
     fn visit_call(
         &mut self,
         func: &mir::Operand<'tcx>,
-        args: &Vec<Spanned<mir::Operand<'tcx>>>,
+        args: &Box<[Spanned<mir::Operand<'tcx>>]>,
         destination: &mir::Place<'tcx>,
         location: mir::Location,
     ) {
@@ -351,7 +353,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
                 | TyKind::Coroutine(callee_def_id, gen_args) => {
                     self.resolve_call(callee_def_id, gen_args, args, destination, location)
                 }
-                TyKind::FnPtr(_) => {
+                TyKind::FnPtr(..) => {
                     let fnptr = self.visit_const_operand(constant);
                     debug!("Constant function pointer: {:?}", fnptr);
                     let args = self.visit_args(args);
@@ -384,7 +386,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
         }
     }
     
-    fn visit_args(&mut self, args: &Vec<Spanned<mir::Operand<'tcx>>>,) -> Vec<Rc<Path>> {
+    fn visit_args(&mut self, args: &Box<[Spanned<mir::Operand<'tcx>>]>,) -> Vec<Rc<Path>> {
         let mut args_paths = Vec::<Rc<Path>>::with_capacity(args.len());
         for arg in args {
             match &arg.node {
@@ -408,7 +410,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             mir::Rvalue::Repeat(operand, count) => {
                 self.visit_repeat(lh_path, operand, count);
             }
-            mir::Rvalue::Ref(_, _, place) | mir::Rvalue::AddressOf(_, place) => {
+            mir::Rvalue::Ref(_, _, place)  => {
                 self.visit_ref_or_address_of(lh_path, place);
             }
             mir::Rvalue::ThreadLocalRef(_def_id) => {}
@@ -420,7 +422,6 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             mir::Rvalue::BinaryOp(bin_op, box (left_operand, right_operand)) => {
                 self.visit_binary_op(lh_path, *bin_op, left_operand, right_operand);
             }
-            mir::Rvalue::CheckedBinaryOp(_bin_op, box (_left_operand, _right_operand)) => {}
             mir::Rvalue::NullaryOp(..) | mir::Rvalue::UnaryOp(..) | mir::Rvalue::Discriminant(..) => {}
             mir::Rvalue::Aggregate(aggregate_kind, operands) => {
                 self.visit_aggregate(lh_path, aggregate_kind, operands);
@@ -428,7 +429,8 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             mir::Rvalue::ShallowInitBox(operand, ty) => {
                 self.visit_shallow_init_box(lh_path, operand, *ty);
             }
-            mir::Rvalue::CopyForDeref(place) => {
+            mir::Rvalue::CopyForDeref(place) 
+            | mir::Rvalue::RawPtr(_, place) => {
                 // A CopyForDeref is equivalent to a read from a place at the codegen level, 
                 // but is treated specially by drop elaboration. When such a read happens, 
                 // it is guaranteed (via nature of the mir_opt Derefer in 
@@ -436,6 +438,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
                 // value is a deref operation, immediately followed by one or more projections.
                 self.visit_copy_or_move(lh_path, place);
             }
+     
         }
     }
 
@@ -522,7 +525,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
         let mir::ConstOperand { const_, .. } = const_op;
         match const_ {
             // This constant came from the type system
-            mir::Const::Ty(c) => self.visit_const(c),
+            mir::Const::Ty(_, c) => self.visit_const(c),
             // An unevaluated mir constant which is not part of the type system.
             mir::Const::Unevaluated(c, ty) => self.visit_unevaluated_const(c, *ty),
             // This constant contains something the type system cannot handle (e.g. pointers).
@@ -553,9 +556,9 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
         let args = self.substs_specializer.specialize_generic_args(unevaluated.args);
         debug!("resolving unevaluated def_id {:?} {:?}", def_id, def_ty);
         if !args.is_empty() {
-            let param_env = rustc_middle::ty::ParamEnv::reveal_all();
+            let param_env = rustc_middle::ty::TypingEnv::post_analysis(self.tcx(), def_id);
             if let Ok(Some(instance)) =
-                rustc_middle::ty::Instance::resolve(self.tcx(), param_env, def_id, args)
+                rustc_middle::ty::Instance::try_resolve(self.tcx(), param_env, def_id, args)
             {
                 def_id = instance.def.def_id();
             }
@@ -739,21 +742,20 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             // An exposing pointer to address cast. A cast between a pointer and an
             // integer type, or between a function pointer and an integer type.
             // See the docs on expose_addr for more details.
-            mir::CastKind::PointerExposeAddress 
+            // mir::CastKind::PointerExposeAddress 
             // An address-to-pointer cast that picks up an exposed provenance.
             // See the docs on from_exposed_addr for more details.
-            | mir::CastKind::PointerFromExposedAddress => {}
+            // | mir::CastKind::PointerFromExposedAddress => {}
             // Primitive casts
             mir::CastKind::IntToInt
             | mir::CastKind::FloatToInt
             | mir::CastKind::FloatToFloat
             | mir::CastKind::IntToFloat => {}
             // Cast into a dyn* object.
-            mir::CastKind::DynStar
             // Go from a mut raw pointer to a const raw pointer.
-            | mir::CastKind::PointerCoercion(PointerCoercion::MutToConstPointer)
+         mir::CastKind::PointerCoercion(PointerCoercion::MutToConstPointer, _)
             // Go from a safe fn pointer to an unsafe fn pointer.
-            | mir::CastKind::PointerCoercion(PointerCoercion::UnsafeFnPointer) => {
+            | mir::CastKind::PointerCoercion(PointerCoercion::UnsafeFnPointer, _) => {
                 // These kinds of pointer casts do not re-interpret the bits of the input as a 
                 // different type. We simply treat them as direct assignments.
                 let rh_path = match operand {
@@ -772,7 +774,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             // Go from a fn-item type to a fn-pointer type.
             // For example: ``` p = foo as fn(i32) -> i32 (Pointer(ReifyFnPointer)); ```
             // The operand should be a constant of a function instance or a place of FnDef type
-            mir::CastKind::PointerCoercion(PointerCoercion::ReifyFnPointer) => {
+            mir::CastKind::PointerCoercion(PointerCoercion::ReifyFnPointer, _) => {
                 let rh_path = match operand {
                     mir::Operand::Move(place) | mir::Operand::Copy(place) => {
                         let mut rh_path = self.get_path_for_place(place);
@@ -800,7 +802,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             // It cannot convert a closure that requires unsafe.
             // Closures capturing the environments cannot be converted to fn pointer as well.
             // The operand should be a place of a closure instance.
-            mir::CastKind::PointerCoercion(PointerCoercion::ClosureFnPointer(..)) => {
+            mir::CastKind::PointerCoercion(PointerCoercion::ClosureFnPointer(..), _) => {
                 let rh_path = match operand {
                     mir::Operand::Move(place) | mir::Operand::Copy(place) => {
                         self.get_path_for_place(place)
@@ -821,8 +823,8 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             // Unsize a pointer/reference value, e.g., &[T; n] to &[T]. Note that the source could 
             // be a thin or fat pointer. This will do things like convert thin pointers to fat 
             // pointers, or convert structs containing thin pointers to structs containing fat 
-            // pointers, or convert between fat pointers. We don’t store the details of how the 
-            // transform is done (in fact, we don’t know that, because it might depend on the 
+            // pointers, or convert between fat pointers. We don't store the details of how the 
+            // transform is done (in fact, we don't know that, because it might depend on the 
             // precise type parameters). We just store the target type. Codegen backends and miri 
             // figure out what has to be done based on the precise source/target type at hand.
             // Example of casting a struct containing thin pointers to a struct containing
@@ -831,7 +833,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             //  let a = Box::<[i32; 3]>::new([1, 2, 3]);
             //  let b: Box::<[i32]> = a;
             // ```
-            mir::CastKind::PointerCoercion(PointerCoercion::Unsize) => {
+            mir::CastKind::PointerCoercion(PointerCoercion::Unsize, _) => {
                 match operand {
                     mir::Operand::Move(place) | mir::Operand::Copy(place) => {
                         let (rh_path, rh_type) = self.get_path_and_type_for_place(place);
@@ -854,7 +856,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             // Go from *const [T; N] to *const T
             // In practice, we find that most casts from *const [T; N] to *const T are classified 
             // as CastKind::PtrToPtr
-            mir::CastKind::PointerCoercion(PointerCoercion::ArrayToPointer) 
+            mir::CastKind::PointerCoercion(PointerCoercion::ArrayToPointer, _) 
             | mir::CastKind::PtrToPtr 
             // Cast a function pointer to another pointer type
             // e.g. ``` let p = fp as *const (); ```
@@ -883,6 +885,18 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
                     let (rh_path, rh_type) = self.get_path_and_type_for_place(place);
                     self.copy_and_transmute(rh_path, rh_type, lh_path, lh_type);
                 }
+            }
+            mir::CastKind::PointerExposeProvenance => todo!(),
+            mir::CastKind::PointerWithExposedProvenance => todo!(),
+            mir::CastKind::PointerCoercion(PointerCoercion::DynStar, _) => {
+                // Handle dyn* pointer cast similar to MutToConstPointer
+                let rh_path = match operand {
+                    mir::Operand::Move(place) | mir::Operand::Copy(place) => {
+                        self.get_path_for_place(place)
+                    }
+                    mir::Operand::Constant(box const_op) => self.visit_const_operand(const_op)
+                };
+                self.add_direct_edge(rh_path, lh_path);
             }
         }
     }
@@ -943,7 +957,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
                 }
             }
             mir::AggregateKind::Adt(def, variant_idx, args, _, case_index) => {
-                // The second field is the variant index. It’s equal to 0 for struct and union expressions. 
+                // The second field is the variant index. It's equal to 0 for struct and union expressions. 
                 // The last field is the active field number and is present only for union expressions 
                 // – e.g., for a union expression SomeUnion { c: .. }, the active field index would identity 
                 // the field c
@@ -981,7 +995,8 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
                 }
             }
             mir::AggregateKind::Closure(_def_id, _args)
-            | mir::AggregateKind::Coroutine(_def_id, _args) => {
+            | mir::AggregateKind::Coroutine(_def_id, _args)
+            | mir::AggregateKind::CoroutineClosure(_def_id, _args) => {
                 for (i, operand) in operands.iter().enumerate() {
                     let base_ty = self.acx.get_path_rustc_type(&lh_path).unwrap();
                     let field_path = Path::new_field(lh_path.clone(), i);
@@ -990,6 +1005,21 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
                     self.visit_use(field_path, operand);
                 }
             }
+            // TOOD: 这里可能不对
+            mir::AggregateKind::RawPtr(ty, mutability) => {
+                let raw_ptr_ty = self.tcx().mk_ty_from_kind(rustc_middle::ty::TyKind::RawPtr(
+                    *ty,
+                    *mutability
+                ));
+                self.acx.set_path_rustc_type(lh_path.clone(), raw_ptr_ty);
+                
+                // 处理所有操作数
+                for (i, operand) in operands.iter().enumerate() {
+                    let field_path = Path::new_field(lh_path.clone(), i);
+                    self.acx.set_path_rustc_type(field_path.clone(), *ty);
+                    self.visit_use(field_path, operand);
+                }
+            },
         }
     }
 
@@ -1020,7 +1050,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
         &mut self,
         callee_def_id: &DefId,
         gen_args: &GenericArgsRef<'tcx>,
-        args: &Vec<Spanned<mir::Operand<'tcx>>>,
+        args: &Box<[Spanned<mir::Operand<'tcx>>]>,
         destination: &mir::Place<'tcx>,
         location: mir::Location,
     ) {
@@ -1100,7 +1130,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
         // The fn_traits feature allows for implementation of the Fn* traits for
         // creating custom closure-like types. We first try to devirtualize the callee function
         // <https://doc.rust-lang.org/beta/unstable-book/library-features/fn-traits.html>
-        let param_env = rustc_middle::ty::ParamEnv::reveal_all();
+        let param_env = rustc_middle::ty::TypingEnv::post_analysis(self.tcx(), callee_def_id);
         // Instance::resolve panics if try_normalize_erasing_regions returns an error.
         // It is hard to figure out exactly when this will be the case.
         if self.tcx().try_normalize_erasing_regions(param_env, *gen_args).is_err() {
@@ -1108,7 +1138,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             return;
         }
         let resolved_instance =
-            rustc_middle::ty::Instance::resolve(self.tcx(), param_env, *callee_def_id, gen_args);
+            rustc_middle::ty::Instance::try_resolve(self.tcx(), param_env, *callee_def_id, gen_args);
         if let Ok(Some(instance)) = resolved_instance {
             let resolved_def_id = instance.def.def_id();
 
@@ -1116,7 +1146,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
             // When the Fn* trait object is specialized to a closure, the resolved_def_id 
             // corresponds to the def id of the closure. We still handle it along with function 
             // items and function pointers.
-            if self.tcx().is_closure_or_coroutine(resolved_def_id) {
+            if self.tcx().is_closure_like(resolved_def_id) {
                 self.inline_indirectly_called_function(
                     callee_def_id,
                     gen_args,
@@ -1466,14 +1496,14 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
     }
 
     /// Returns the parameter environment for the current function.
-    pub fn get_param_env(&self) -> rustc_middle::ty::ParamEnv<'tcx> {
+    pub fn get_param_env(&self) -> rustc_middle::ty::TypingEnv<'tcx> {
         let def_id = self.def_id();
-        let env_def_id = if self.tcx().is_closure_or_coroutine(def_id) {
+        let env_def_id = if self.tcx().is_closure_like(def_id) {
             self.tcx().typeck_root_def_id(def_id)
         } else {
             def_id
         };
-        self.tcx().param_env(env_def_id)
+        rustc_middle::ty::TypingEnv::post_analysis(self.tcx(), env_def_id)
     }
 
     /// Copy the value at `source_path` to a value at `target_path`.
@@ -1654,7 +1684,7 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
                         // of the Unique pointer at field 0 of the box
                         // Create an auxiliary variable to represent this sub-field.
                         // `(*_1);` ==> `aux = _1.0.0.0; *aux`
-                        let box_ptr_field = self.get_box_pointer_field(base_path, ty.boxed_ty());
+                        let box_ptr_field = self.get_box_pointer_field(base_path, ty);
                         let box_ptr_ty = self
                             .acx
                             .get_path_rustc_type(&box_ptr_field)
@@ -1745,10 +1775,10 @@ impl<'pta, 'tcx, 'compilation> FuncPAGBuilder<'pta, 'tcx, 'compilation> {
         let value_path = Path::append_projection(&box_path, &projection);
         if self.acx.get_path_rustc_type(&value_path).is_none() {
             let deref_ty = self.substs_specializer.specialize_generic_argument_type(ty);
-            let ty = self.tcx().mk_ty_from_kind(TyKind::RawPtr(rustc_middle::ty::TypeAndMut {
-                ty: deref_ty,
-                mutbl: rustc_middle::mir::Mutability::Not,
-            }));
+            let ty = self.tcx().mk_ty_from_kind(TyKind::RawPtr(
+                deref_ty,
+                rustc_middle::mir::Mutability::Not,
+            ));
             self.acx.set_path_rustc_type(value_path.clone(), ty);
         }
         value_path

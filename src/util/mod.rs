@@ -9,8 +9,8 @@ use rustc_middle::ty::{GenericArgsRef, TyCtxt, TyKind};
 use std::io::Write;
 use std::rc::Rc;
 
-use crate::mir::function::GenericArgE;
 use crate::mir::analysis_context::AnalysisContext;
+use crate::mir::function::GenericArgE;
 use crate::mir::path::{Path, PathEnum, PathSelector};
 
 pub mod bit_vec;
@@ -24,7 +24,6 @@ pub mod pta_statistics;
 pub mod results_dumper;
 pub mod type_util;
 pub mod unsafe_statistics;
-
 
 /// Returns the location of the rust system binaries that are associated with this build of rust-pta.
 /// The location is obtained by looking at the contents of the environmental variables that were
@@ -82,7 +81,7 @@ pub fn is_std_lib_func(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     }
 }
 
-/// Returns true if the function has an explicit `self` (either `self` or `&(mut) self`) as its first 
+/// Returns true if the function has an explicit `self` (either `self` or `&(mut) self`) as its first
 /// parameter, allowing method calls.
 #[inline]
 pub fn has_self_parameter(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
@@ -131,15 +130,17 @@ pub fn is_dynamic_call<'tcx>(
     }
 }
 
-
 #[inline]
-pub fn customize_generic_args<'tcx>(tcx: TyCtxt<'tcx>, generic_args: GenericArgsRef<'tcx>) -> Vec<GenericArgE<'tcx>> {
+pub fn customize_generic_args<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    generic_args: GenericArgsRef<'tcx>,
+) -> Vec<GenericArgE<'tcx>> {
     generic_args
         .iter()
         .map(|t| match t.unpack() {
             // If the const generic cannot be evaluated, we repalce it with Const 1
             rustc_middle::ty::GenericArgKind::Const(c) => {
-                if let Some(val) = c.try_eval_target_usize(tcx, rustc_middle::ty::ParamEnv::reveal_all()) {
+                if let Some(val) = c.try_to_target_usize(tcx) {
                     GenericArgE::Const(rustc_middle::ty::Const::from_target_usize(tcx, val))
                 } else {
                     GenericArgE::Const(rustc_middle::ty::Const::from_target_usize(tcx, 1))

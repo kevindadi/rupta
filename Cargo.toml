@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "pta"
+path = "src/bin/pta.rs"
+
+[[bin]]
+name = "cargo-pta"
+path = "src/bin/cargo-pta.rs"
 
 [dependencies]
 anyhow = "*"
@@ -20,10 +27,13 @@ libc = "*"
 nom = "*"
 serde_json = "*"
 rand = "*"
-rayon = "~1.6.0"
-rayon-core = "~1.10.0"
+rayon = "~1.10"
+rayon-core = "~1.12"
 regex = "*"
 rpds = { version = "*", features = ["serde"] }
 rustc_tools_util = "*"
 petgraph = "*"
 shellwords = "*"
+
+[package.metadata.rust-analyzer]
+rustc_private = true

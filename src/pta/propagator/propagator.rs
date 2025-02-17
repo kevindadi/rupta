@@ -3,7 +3,7 @@
 // This source code is licensed under the GNU license found in the
 // LICENSE file in the root directory of this source tree.
 
-//! The key component of our pointer analysis. 
+//! The key component of our pointer analysis.
 
 use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
@@ -15,15 +15,15 @@ use rustc_middle::ty::{Ty, TyCtxt, TyKind};
 
 use crate::builder::call_graph_builder;
 use crate::graph::pag::*;
-use crate::mir::call_site::{AssocCallGroup, CallSiteS};
 use crate::mir::analysis_context::AnalysisContext;
+use crate::mir::call_site::{AssocCallGroup, CallSiteS};
 use crate::mir::path::{PathEnum, PathSelector};
+use crate::pta::strategies::stack_filtering::{SFReachable, StackFilter};
 use crate::pta::*;
-use crate::pta::strategies::stack_filtering::{StackFilter, SFReachable};
 use crate::pts_set::points_to::PointsToSet;
 use crate::util::{self, chunked_queue, type_util};
 
-/// Propagating the points-to information along the PAG edges. 
+/// Propagating the points-to information along the PAG edges.
 pub struct Propagator<'pta, 'tcx, 'compilation, F, P: PAGPath> {
     /// The analysis context
     pub(crate) acx: &'pta mut AnalysisContext<'tcx, 'compilation>,
@@ -37,23 +37,23 @@ pub struct Propagator<'pta, 'tcx, 'compilation, F, P: PAGPath> {
     /// - Dynamic trait call
     /// - Dynamic fntrait call
     /// - Fnptr call
-    /// 1. For a dynamic trait call resolved with a concrete object that is pointed to by the dynamic trait object, 
+    /// 1. For a dynamic trait call resolved with a concrete object that is pointed to by the dynamic trait object,
     ///    we add it into `new_call_instances`
-    /// 2. For a dynamic fntrait call with a concrete object that is pointed to by the dynamic fntrait object, 
-    ///    a) when the concrete object is a function item or a closure, we directly resolve the call target 
-    ///       and add it into `new_calls`. The resolved target function may be an associated function that 
-    ///       has self or &self parameter, which needs to be cached in the assoc_calls. Specifically, when the 
-    ///       first parameter of the resolved function is &self, we also add all the pointed-to objects of self 
-    ///       into `new_call_instances` 
-    ///    b) when the concrete object is a function pointer, we create a new function pointer callsite, and 
+    /// 2. For a dynamic fntrait call with a concrete object that is pointed to by the dynamic fntrait object,
+    ///    a) when the concrete object is a function item or a closure, we directly resolve the call target
+    ///       and add it into `new_calls`. The resolved target function may be an associated function that
+    ///       has self or &self parameter, which needs to be cached in the assoc_calls. Specifically, when the
+    ///       first parameter of the resolved function is &self, we also add all the pointed-to objects of self
+    ///       into `new_call_instances`
+    ///    b) when the concrete object is a function pointer, we create a new function pointer callsite, and
     ///       leave it to be processed by fnptr call process
-    ///    c) For other cases, the concrete object should be a type that impls Fn* trait, we resolved the call 
+    ///    c) For other cases, the concrete object should be a type that impls Fn* trait, we resolved the call
     ///       as a normal dynamic trait call and add it into `new_call_instances`
     /// 3. For a fnptr call resolved with a concrete function item that is pointed to by the function pointer,
-    ///    we add it into `new_calls` (The resolved target function may also be an associated function that 
+    ///    we add it into `new_calls` (The resolved target function may also be an associated function that
     ///    has self or &self parameter.)
     /// 4. Except for the dynamic calls, For a statically dispatched method call on a receiver, we also dynamically
-    ///    add the pointed-to objects of the receiver (the self reference) to `new_call_instances` for the need 
+    ///    add the pointed-to objects of the receiver (the self reference) to `new_call_instances` for the need
     ///    of object-sensitive pointer analysis
     new_calls: &'pta mut Vec<(Rc<CallSiteS<F, P>>, FuncId)>,
     new_call_instances: &'pta mut Vec<(Rc<CallSiteS<F, P>>, P, FuncId)>,
@@ -72,7 +72,8 @@ pub struct Propagator<'pta, 'tcx, 'compilation, F, P: PAGPath> {
     stack_filter: Option<&'pta mut StackFilter<F>>,
 }
 
-impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> where 
+impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P>
+where
     F: Copy + Into<FuncId> + std::cmp::Eq + std::hash::Hash + SFReachable,
     P: PAGPath<FuncTy = F>,
 {
@@ -86,7 +87,7 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
         addr_edge_iter: &'pta mut chunked_queue::IterCopied<EdgeId>,
         inter_proc_edge_iter: &'pta mut chunked_queue::IterCopied<EdgeId>,
         assoc_calls: &'pta mut AssocCallGroup<NodeId, F, P>,
-        stack_filter: Option<&'pta mut StackFilter<F>>
+        stack_filter: Option<&'pta mut StackFilter<F>>,
     ) -> Self {
         Propagator {
             acx,
@@ -233,7 +234,7 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
             let mut cast_out_edges = std::mem::take(cast_out_edges);
 
             for edge in &cast_out_edges {
-                self.propagate_cast(*edge, true);   
+                self.propagate_cast(*edge, true);
             }
 
             std::mem::swap(
@@ -261,7 +262,11 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
 
     /// If there are some static instance calls on this node
     fn handle_static_dispatch_instance_call(&mut self, node_id: NodeId) {
-        if self.assoc_calls.static_dispatch_instance_calls.contains_key(&node_id) {
+        if self
+            .assoc_calls
+            .static_dispatch_instance_calls
+            .contains_key(&node_id)
+        {
             let instance_callsites = self
                 .assoc_calls
                 .static_dispatch_instance_calls
@@ -281,16 +286,15 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
         }
     }
 
-
     /// If this node is a dynamic trait object, add call edges for the dynamic calls.
     fn handle_dynamic_dispatch_call(&mut self, node_id: NodeId) {
         if self.assoc_calls.dynamic_dispatch_calls.contains_key(&node_id) {
             let dyn_callsites = self
-                .assoc_calls.
-                dynamic_dispatch_calls.
-                get(&node_id).
-                unwrap().
-                clone();
+                .assoc_calls
+                .dynamic_dispatch_calls
+                .get(&node_id)
+                .unwrap()
+                .clone();
 
             if let Some(diff_pts) = self.get_diff_pts(node_id) {
                 let diff_pts = diff_pts.clone();
@@ -315,8 +319,12 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
     /// resolve the function call.
     fn handle_dynamic_fntrait_call(&mut self, node_id: NodeId) {
         if self.assoc_calls.dynamic_fntrait_calls.contains_key(&node_id) {
-            let dynamic_fntrait_callsites =
-                self.assoc_calls.dynamic_fntrait_calls.get(&node_id).unwrap().clone();
+            let dynamic_fntrait_callsites = self
+                .assoc_calls
+                .dynamic_fntrait_calls
+                .get(&node_id)
+                .unwrap()
+                .clone();
 
             if let Some(diff_pts) = self.get_diff_pts(node_id) {
                 let diff_pts = diff_pts.clone();
@@ -329,11 +337,12 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
     /// src --load--> dst:  node \in pts(src) ==> node --direct-->dst
     fn process_load(&mut self, load_edge: EdgeId, base_pts: &PointsTo<NodeId>) {
         let (_src, dst) = self.pag.graph().edge_endpoints(load_edge).unwrap();
-        let PAGEdgeEnum::LoadPAGEdge(load_proj) = 
-            self.pag.get_edge(load_edge).kind.clone() else { unreachable!() };
+        let PAGEdgeEnum::LoadPAGEdge(load_proj) = self.pag.get_edge(load_edge).kind.clone() else {
+            unreachable!()
+        };
 
         let stack_filter_pred = Self::stack_filter_pred(load_edge);
-        
+
         let dst_path = self.pag.node_path(dst).clone();
         for pointee in base_pts {
             let pointee_path = self.pag.node_path(pointee).clone();
@@ -354,11 +363,12 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
     /// src --store--> dst:  node \in pts(dst) ==> src --direct--> node
     fn process_store(&mut self, store_edge: EdgeId, base_pts: &PointsTo<NodeId>) {
         let (src, _dst) = self.pag.graph().edge_endpoints(store_edge).unwrap();
-        let PAGEdgeEnum::StorePAGEdge(store_proj) = 
-            self.pag.get_edge(store_edge).kind.clone() else { unreachable!() };
+        let PAGEdgeEnum::StorePAGEdge(store_proj) = self.pag.get_edge(store_edge).kind.clone() else {
+            unreachable!()
+        };
 
         let stack_filter_pred = Self::stack_filter_pred(store_edge);
-        
+
         let src_path = self.pag.node_path(src).clone();
         for pointee in base_pts {
             let pointee_path = self.pag.node_path(pointee).clone();
@@ -379,11 +389,12 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
     /// Process the given gep edge.
     fn process_gep(&mut self, gep_edge: EdgeId, base_pts: &PointsTo<NodeId>) {
         let (_src, dst) = self.pag.graph().edge_endpoints(gep_edge).unwrap();
-        let PAGEdgeEnum::GepPAGEdge(gep_proj) = 
-            self.pag.get_edge(gep_edge).kind.clone() else { unreachable!() };
+        let PAGEdgeEnum::GepPAGEdge(gep_proj) = self.pag.get_edge(gep_edge).kind.clone() else {
+            unreachable!()
+        };
 
         let stack_filter_pred = Self::stack_filter_pred(gep_edge);
-        
+
         let mut changed = false;
         for pointee in base_pts {
             let pointee_path = self.pag.node_path(pointee).clone();
@@ -433,11 +444,9 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
                 let replaced_args = self.tcx().mk_args(&replaced_args);
 
                 // Devirtualize the callee function
-                if let Some((callee_def_id, gen_args)) = call_graph_builder::try_to_devirtualize(
-                    self.tcx(),
-                    *callee_def_id,
-                    replaced_args,
-                ) {
+                if let Some((callee_def_id, gen_args)) =
+                    call_graph_builder::try_to_devirtualize(self.tcx(), *callee_def_id, replaced_args)
+                {
                     let func_id = self.acx.get_func_id(callee_def_id, gen_args);
                     // self.add_new_call(&dyn_callsite, &func_id);
                     self.add_new_call_instance(&dyn_callsite, &pointee_path, &func_id);
@@ -472,7 +481,7 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
                 fn_item_ty = fn_item.try_eval_path_type(self.acx);
             }
             match fn_item_ty.kind() {
-                // A function pointer can point to a trait-defined function. However, we do not need to 
+                // A function pointer can point to a trait-defined function. However, we do not need to
                 // perform static dispatch here as each function item is statically dispatched when initialized.
                 TyKind::FnDef(..) => {
                     if let PathEnum::Function(func_id) = fn_item.value() {
@@ -495,7 +504,10 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
                     }
                 }
                 _ => {
-                    error!("Unexpected type of function pointer's pointee: {:?}", fn_item_ty.kind());
+                    error!(
+                        "Unexpected type of function pointer's pointee: {:?}",
+                        fn_item_ty.kind()
+                    );
                 }
             }
         }
@@ -660,9 +672,9 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
                         );
 
                         // Devirtualize the callee function
-                        let resolved_instance = rustc_middle::ty::Instance::resolve(
+                        let resolved_instance = rustc_middle::ty::Instance::try_resolve(
                             self.tcx(),
-                            rustc_middle::ty::ParamEnv::reveal_all(),
+                            rustc_middle::ty::TypingEnv::fully_monomorphized(),
                             *callee_def_id,
                             replaced_args,
                         );
@@ -673,7 +685,11 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
                                 // The pointee type cannot be FnDef, FnPtr, Closure, therefore its mir is supposed to be available
                                 let func_id = self.acx.get_func_id(resolved_def_id, instance_args);
                                 // self.add_new_call(&dynamic_fntrait_callsite, &func_id);
-                                self.add_new_call_instance(&dynamic_fntrait_callsite, &pointee_path, &func_id);
+                                self.add_new_call_instance(
+                                    &dynamic_fntrait_callsite,
+                                    &pointee_path,
+                                    &func_id,
+                                );
                             } else {
                                 warn!("Unavailable mir for def_id: {:?}", resolved_def_id);
                             }
@@ -709,7 +725,7 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
             let (src_path, src_type) = self.node_path_and_ty(src);
             let (dst_path, dst_type) = self.node_path_and_ty(dst);
             // debug!("Propagating from {:?}({:?}) -> {:?}({:?})", src_path, src_type, dst_path, dst_type);
-            
+
             let type_filter_pred = Self::type_filter_pred();
             let stack_filter_pred = Self::stack_filter_pred(direct_edge);
 
@@ -726,10 +742,9 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
             if let Some(diff) = self.pt_data.get_diff_pts(src) {
                 for pointee in &diff.clone() {
                     let (pointee_path, pointee_type) = self.node_path_and_ty(pointee);
-                    if type_filter_pred(self.acx, pointee_type, src_deref_type, dst_deref_type) 
-                    {   
+                    if type_filter_pred(self.acx, pointee_type, src_deref_type, dst_deref_type) {
                         continue;
-                    } 
+                    }
                     if stack_filter_pred(self.acx, self.stack_filter.as_deref(), &pointee_path) {
                         self.collect_filtered_pts(direct_edge, pointee);
                         continue;
@@ -743,10 +758,9 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
                 if let Some(propa) = self.pt_data.get_propa_pts(src) {
                     for pointee in &propa.clone() {
                         let (pointee_path, pointee_type) = self.node_path_and_ty(pointee);
-                        if type_filter_pred(self.acx, pointee_type, src_deref_type, dst_deref_type) 
-                        {
+                        if type_filter_pred(self.acx, pointee_type, src_deref_type, dst_deref_type) {
                             continue;
-                        }  
+                        }
                         if stack_filter_pred(self.acx, self.stack_filter.as_deref(), &pointee_path) {
                             self.collect_filtered_pts(direct_edge, pointee);
                             continue;
@@ -857,12 +871,11 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
                     }
                 }
                 // If the pointee has been cast to the dst_deref_ty before
-                if let Some(type_variant) = regularized_path.type_variant(self.acx, dst_deref_ty)
-                {
+                if let Some(type_variant) = regularized_path.type_variant(self.acx, dst_deref_ty) {
                     let type_variant_id = self.pag.get_or_insert_node(&type_variant);
                     changed |= self.pt_data.add_pts(dst, type_variant_id);
                     continue;
-                } 
+                }
                 // If the pointer is cast to another basic pointer ty, e.g. *u8 -> *[u8]
                 if type_util::is_basic_pointer(dst_ty) {
                     if let Some(cast_path) = regularized_path.cast_to(self.acx, dst_deref_ty) {
@@ -870,9 +883,9 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
                         changed |= self.pt_data.add_pts(dst, cast_path_id);
                         continue;
                     }
-                } 
+                }
                 if matches!(regularized_path.value(), PathEnum::HeapObj { .. }) {
-                    // For heap objects that have a concretized type, we do not let it been cast from 
+                    // For heap objects that have a concretized type, we do not let it been cast from
                     // a simple type to other incompatible types.
                     if let Some(concre_ty) = regularized_path.concretized_heap_type(self.acx) {
                         let mut compatible_cast = false;
@@ -1099,7 +1112,7 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
                     .add_addr_edge(&closure_path, &closure_ref_path)
                     .expect("Expect a newly added address_of edge");
                 self.process_addr(addr_edge);
-                actual_args[0] = closure_ref_path; 
+                actual_args[0] = closure_ref_path;
             }
         }
         // Set up a new callsite
@@ -1129,15 +1142,19 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
     }
 
     fn add_new_call_instance(&mut self, callsite: &Rc<CallSiteS<F, P>>, instance: &P, callee_id: &FuncId) {
-        self.new_call_instances.push((callsite.clone(), instance.clone(), *callee_id))
+        self.new_call_instances
+            .push((callsite.clone(), instance.clone(), *callee_id))
     }
 
     fn type_filter_pred() -> impl Fn(&AnalysisContext<'tcx, '_>, Ty<'tcx>, Ty<'tcx>, Ty<'tcx>) -> bool {
-        |acx: &AnalysisContext<'tcx, '_>, pointee_ty: Ty<'tcx>, src_deref_type: Ty<'tcx>, dst_deref_ty: Ty<'tcx>| 
-            -> bool 
-        {
-            if src_deref_type.is_trait() && !dst_deref_ty.is_trait() && 
-                !type_util::equal_types(acx.tcx, pointee_ty, dst_deref_ty) 
+        |acx: &AnalysisContext<'tcx, '_>,
+         pointee_ty: Ty<'tcx>,
+         src_deref_type: Ty<'tcx>,
+         dst_deref_ty: Ty<'tcx>|
+         -> bool {
+            if src_deref_type.is_trait()
+                && !dst_deref_ty.is_trait()
+                && !type_util::equal_types(acx.tcx, pointee_ty, dst_deref_ty)
             {
                 true
             } else {
@@ -1146,16 +1163,18 @@ impl<'pta, 'tcx, 'compilation, F, P> Propagator<'pta, 'tcx, 'compilation, F, P> 
         }
     }
 
-    fn stack_filter_pred(edge_id: EdgeId) -> impl Fn(&AnalysisContext<'_, '_>, Option<&StackFilter<F>>, &P) -> bool {
-        move |acx:&AnalysisContext, stack_filter: Option<&StackFilter<F>>, pointee: &P| -> bool {
+    fn stack_filter_pred(
+        edge_id: EdgeId,
+    ) -> impl Fn(&AnalysisContext<'_, '_>, Option<&StackFilter<F>>, &P) -> bool {
+        move |acx: &AnalysisContext, stack_filter: Option<&StackFilter<F>>, pointee: &P| -> bool {
             if !acx.analysis_options.stack_filtering {
                 return false;
-            } 
-            if let Some(sf) = stack_filter  {
+            }
+            if let Some(sf) = stack_filter {
                 if let Some(&edge_func) = sf.get_container_func_of_edge(&edge_id) {
                     return !sf.is_potentially_alive(acx, edge_func, pointee);
-                } 
-            } 
+                }
+            }
 
             return false;
         }

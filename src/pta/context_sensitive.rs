@@ -12,25 +12,27 @@ use itertools::Itertools;
 use log::*;
 use rustc_middle::ty::TyCtxt;
 
-use super::*;
+use super::propagator::propagator::Propagator;
 use super::strategies::context_strategy::{ContextStrategy, KObjectSensitive};
 use super::strategies::stack_filtering::StackFilter;
-use super::propagator::propagator::Propagator;
 use super::PointerAnalysis;
-use crate::graph::func_pag::FuncPAG;
+use super::*;
 use crate::graph::call_graph::CSCallGraph;
+use crate::graph::func_pag::FuncPAG;
+use crate::mir::analysis_context::AnalysisContext;
 use crate::mir::call_site::{AssocCallGroup, CSCallSite, CallSite, CallType};
 use crate::mir::context::{Context, ContextId};
-use crate::mir::function::{FuncId, CSFuncId};
-use crate::mir::analysis_context::AnalysisContext;
-use crate::mir::path::{Path, CSPath, PathEnum};
+use crate::mir::function::{CSFuncId, FuncId};
+use crate::mir::path::{CSPath, Path, PathEnum};
 use crate::rta::rta::RapidTypeAnalysis;
 use crate::util::pta_statistics::ContextSensitiveStat;
 use crate::util::{self, chunked_queue, results_dumper};
 
-pub type CallSiteSensitivePTA<'pta, 'tcx, 'compilation> = ContextSensitivePTA<'pta, 'tcx, 'compilation, KCallSiteSensitive>;
+pub type CallSiteSensitivePTA<'pta, 'tcx, 'compilation> =
+    ContextSensitivePTA<'pta, 'tcx, 'compilation, KCallSiteSensitive>;
 /// The object-sensitive pointer analysis for Rust has not been throughly evaluated so far.
-pub type ObjectSensitivePTA<'pta, 'tcx, 'compilation> = ContextSensitivePTA<'pta, 'tcx, 'compilation, KObjectSensitive>;
+pub type ObjectSensitivePTA<'pta, 'tcx, 'compilation> =
+    ContextSensitivePTA<'pta, 'tcx, 'compilation, KObjectSensitive>;
 
 pub struct ContextSensitivePTA<'pta, 'tcx, 'compilation, S: ContextStrategy> {
     /// The analysis context
@@ -63,7 +65,9 @@ pub struct ContextSensitivePTA<'pta, 'tcx, 'compilation, S: ContextStrategy> {
     pub pre_analysis_time: Duration,
 }
 
-impl<'pta, 'tcx, 'compilation, S: ContextStrategy> Debug for ContextSensitivePTA<'pta, 'tcx, 'compilation, S> {
+impl<'pta, 'tcx, 'compilation, S: ContextStrategy> Debug
+    for ContextSensitivePTA<'pta, 'tcx, 'compilation, S>
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         "ContextSensitivePTA".fmt(f)
     }
@@ -105,13 +109,12 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> ContextSensitivePTA<'pta, 'tc
     #[inline]
     pub fn get_context_by_id(&self, context_id: ContextId) -> Rc<Context<S::E>> {
         self.ctx_strategy.get_context_by_id(context_id)
-        
     }
     #[inline]
     pub fn get_empty_context_id(&mut self) -> ContextId {
         self.ctx_strategy.get_empty_context_id()
     }
-    
+
     /// Process statements in reachable functions.
     fn process_reach_funcs(&mut self) {
         while let Some(func) = self.rf_iter.next() {
@@ -178,7 +181,8 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> ContextSensitivePTA<'pta, 'tc
         for (callsite, callee) in &fpag.static_dispatch_callsites {
             let cs_callsite = self.mk_cs_callsite(callsite, func.cid);
             self.process_new_call(&cs_callsite, callee);
-            self.call_graph.set_callsite_type(callsite.into(), CallType::StaticDispatch);
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::StaticDispatch);
         }
 
         // For special callsites, we have summary the effects. Therefore we only add call edge
@@ -190,7 +194,8 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> ContextSensitivePTA<'pta, 'tc
             let cs_callee = self.mk_cs_func(*callee, empty_cid);
             self.call_graph.add_edge(cs_callsite.into(), func, cs_callee);
             // This may classify some special dynamic calls into static calls
-            self.call_graph.set_callsite_type(callsite.into(), CallType::StaticDispatch);
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::StaticDispatch);
         }
 
         // For std::ops::call, dynamic and fnptr callsites, add them to the dynamic_calls and fnptr_calls maps.
@@ -198,21 +203,27 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> ContextSensitivePTA<'pta, 'tc
             let cs_dyn_fn_obj = self.mk_cs_path(dyn_fn_obj, func.cid);
             let cs_callsite = self.mk_cs_callsite(callsite, func.cid);
             let dyn_node_id = self.dyn_node_id(&cs_dyn_fn_obj);
-            self.assoc_calls.add_dynamic_fntrait_call(dyn_node_id, cs_callsite);
-            self.call_graph.set_callsite_type(callsite.into(), CallType::DynamicFnTrait);
+            self.assoc_calls
+                .add_dynamic_fntrait_call(dyn_node_id, cs_callsite);
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::DynamicFnTrait);
         }
         for (dyn_var, callsite) in &fpag.dynamic_dispatch_callsites {
             let cs_dyn_var = self.mk_cs_path(dyn_var, func.cid);
             let cs_callsite = self.mk_cs_callsite(callsite, func.cid);
             let dyn_node_id = self.dyn_node_id(&cs_dyn_var);
-            self.assoc_calls.add_dynamic_dispatch_call(dyn_node_id, cs_callsite);
-            self.call_graph.set_callsite_type(callsite.into(), CallType::DynamicDispatch);
+            self.assoc_calls
+                .add_dynamic_dispatch_call(dyn_node_id, cs_callsite);
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::DynamicDispatch);
         }
         for (fn_ptr, callsite) in &fpag.fnptr_callsites {
             let cs_fn_ptr = self.mk_cs_path(fn_ptr, func.cid);
             let cs_callsite = self.mk_cs_callsite(callsite, func.cid);
-            self.assoc_calls.add_fnptr_call(self.pag.get_or_insert_node(&cs_fn_ptr), cs_callsite);
-            self.call_graph.set_callsite_type(callsite.into(), CallType::FnPtr);
+            self.assoc_calls
+                .add_fnptr_call(self.pag.get_or_insert_node(&cs_fn_ptr), cs_callsite);
+            self.call_graph
+                .set_callsite_type(callsite.into(), CallType::FnPtr);
         }
     }
 
@@ -234,14 +245,19 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> ContextSensitivePTA<'pta, 'tc
                 }
                 let self_ref: &Rc<CSPath> = callsite.args.get(0).expect("invalid arguments");
                 let self_ref_id = self.pag.get_or_insert_node(self_ref);
-                self.assoc_calls.add_static_dispatch_instance_call(self_ref_id, callsite.clone(), *callee);
-            } else { // move self
+                self.assoc_calls
+                    .add_static_dispatch_instance_call(self_ref_id, callsite.clone(), *callee);
+            } else {
+                // move self
                 let instance = callsite.args.get(0).expect("invalid arguments");
-                if let Some(callee_cid) = self.ctx_strategy.new_instance_call_context(callsite, Some(instance)) {
+                if let Some(callee_cid) = self
+                    .ctx_strategy
+                    .new_instance_call_context(callsite, Some(instance))
+                {
                     let cs_callee = CSFuncId::new(callee_cid, *callee);
                     self.add_call_edge(callsite, &cs_callee);
                 }
-            } 
+            }
         } else {
             let callee_cid = self.ctx_strategy.new_static_call_context(callsite);
             let cs_callee = CSFuncId::new(callee_cid, *callee);
@@ -264,7 +280,10 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> ContextSensitivePTA<'pta, 'tc
 
     fn process_new_call_instances(&mut self, new_call_instances: &Vec<(Rc<CSCallSite>, Rc<CSPath>, FuncId)>) {
         for (callsite, instance, callee_id) in new_call_instances {
-            if let Some(callee_cid) = self.ctx_strategy.new_instance_call_context(callsite, Some(instance)) {
+            if let Some(callee_cid) = self
+                .ctx_strategy
+                .new_instance_call_context(callsite, Some(instance))
+            {
                 let cs_callee = CSFuncId::new(callee_cid, *callee_id);
                 self.add_call_edge(callsite, &cs_callee);
             }
@@ -284,25 +303,22 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> ContextSensitivePTA<'pta, 'tc
         }
     }
 
-
     fn mk_cs_path(&mut self, path: &Rc<Path>, cid: ContextId) -> Rc<CSPath> {
         match path.value() {
             PathEnum::Parameter { .. }
             | PathEnum::LocalVariable { .. }
-            | PathEnum::ReturnValue { .. } 
+            | PathEnum::ReturnValue { .. }
             | PathEnum::Auxiliary { .. }
             | PathEnum::QualifiedPath { .. }
-            | PathEnum::OffsetPath { .. } => {
-                CSPath::new_cs_path(cid, path.clone())
-            }
+            | PathEnum::OffsetPath { .. } => CSPath::new_cs_path(cid, path.clone()),
             PathEnum::HeapObj { .. } => {
-                // Directly use the context of the method for the heap objects 
+                // Directly use the context of the method for the heap objects
                 CSPath::new_cs_path(cid, path.clone())
             }
             PathEnum::Constant
             | PathEnum::StaticVariable { .. }
             | PathEnum::PromotedConstant { .. }
-            | PathEnum::Function(..) 
+            | PathEnum::Function(..)
             | PathEnum::PromotedStrRefArray
             | PathEnum::PromotedArgumentV1Array
             | PathEnum::Type(..) => {
@@ -319,7 +335,10 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> ContextSensitivePTA<'pta, 'tc
 
     fn mk_cs_callsite(&mut self, callsite: &Rc<CallSite>, cid: ContextId) -> Rc<CSCallSite> {
         Rc::new(CSCallSite::new(
-            CSFuncId { cid, func_id: callsite.func },
+            CSFuncId {
+                cid,
+                func_id: callsite.func,
+            },
             callsite.location,
             callsite
                 .args
@@ -336,16 +355,20 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> ContextSensitivePTA<'pta, 'tc
         }
     }
 
-    #[inline]
-    pub fn get_pt_data(&self) -> &DiffPTDataTy {
-        &self.pt_data
-    }
-
+    // #[inline]
+    // pub fn get_pt_data(&self) -> &DiffPTDataTy {
+    //     &self.pt_data
+    // }
 }
 
 impl<'pta, 'tcx, 'compilation, S: ContextStrategy> PointerAnalysis<'tcx, 'compilation>
     for ContextSensitivePTA<'pta, 'tcx, 'compilation, S>
 {
+    #[inline]
+    fn get_pt_data(&self) -> &DiffPTDataTy {
+        &self.pt_data
+    }
+
     fn pre_analysis(&mut self) {
         if !self.acx.analysis_options.stack_filtering {
             return;
@@ -355,9 +378,11 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> PointerAnalysis<'tcx, 'compil
         rta.analyze();
         self.pre_analysis_time += rta.analysis_time;
         self.stack_filter = Some(StackFilter::new(rta.call_graph));
-        self.ctx_strategy.with_stack_filter(self.stack_filter.as_mut().unwrap());
+        self.ctx_strategy
+            .with_stack_filter(self.stack_filter.as_mut().unwrap());
         self.pre_analysis_time += self.stack_filter.as_ref().unwrap().fra_time();
-        println!("Pre-analysis time {}", 
+        println!(
+            "Pre-analysis time {}",
             humantime::format_duration(self.pre_analysis_time).to_string()
         );
     }
@@ -368,7 +393,8 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> PointerAnalysis<'tcx, 'compil
         let entry_point = self.acx.entry_point;
         let empty_context_id = self.get_empty_context_id();
         let entry_func_id = self.acx.get_func_id(entry_point, self.tcx().mk_args(&[]));
-        self.call_graph.add_node(CSFuncId::new(empty_context_id, entry_func_id));
+        self.call_graph
+            .add_node(CSFuncId::new(empty_context_id, entry_func_id));
 
         // process statements of reachable functions
         self.process_reach_funcs();
@@ -407,7 +433,7 @@ impl<'pta, 'tcx, 'compilation, S: ContextStrategy> PointerAnalysis<'tcx, 'compil
     fn finalize(&self) {
         // dump call graph, points-to results
         results_dumper::dump_results(self.acx, &self.call_graph, &self.pt_data, &self.pag);
-        
+
         // dump pta statistics
         let pta_stat = ContextSensitiveStat::new(self);
         pta_stat.dump_stats();

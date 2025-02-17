@@ -16,8 +16,8 @@ use crate::mir::context::ContextId;
 use crate::mir::function::FuncId;
 use crate::util::type_util;
 
-use super::function::CSFuncId;
 use super::analysis_context::AnalysisContext;
+use super::function::CSFuncId;
 
 /// Byte offset of metadata in fat pointer
 const PTR_METADATA_OFFSET: usize = 8;
@@ -26,7 +26,7 @@ const PTR_METADATA_OFFSET: usize = 8;
 pub type ProjectionElems = Vec<PathSelector>;
 
 /// The customized representation for a local variable, heap objects, ...
-/// 
+///
 /// Resembles the `Place` type in rustc.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Path {
@@ -48,9 +48,7 @@ pub struct CSPath {
 
 impl CSPath {
     pub fn new_cs_path(cid: ContextId, path: Rc<Path>) -> Rc<CSPath> {
-        Rc::new(CSPath {
-            cid, path
-        })
+        Rc::new(CSPath { cid, path })
     }
 }
 
@@ -89,7 +87,6 @@ pub enum PathEnum {
     /// This path points to data that is not used, but exists only to satisfy a static checker
     /// that a generic parameter is actually used.
     // PhantomData,
-
     Constant,
 
     StaticVariable {
@@ -367,7 +364,7 @@ impl Path {
     pub fn new_union_field(base: Rc<Path>, field_index: usize) -> Rc<Path> {
         Self::append_projection_elem(&base, PathSelector::UnionField(field_index))
     }
-    
+
     /// Creates a path that selects the given downcast of the enum at the given path.
     pub fn new_downcast(base: Rc<Path>, downcast_variant: usize) -> Rc<Path> {
         Self::append_projection_elem(&base, PathSelector::Downcast(downcast_variant))
@@ -482,17 +479,16 @@ impl Path {
 
     pub fn is_constant(&self) -> bool {
         matches!(self.value, PathEnum::Constant)
-    } 
+    }
 
     pub fn is_promoted_constant(&self) -> bool {
-        matches!(self.value, PathEnum::PromotedConstant{..})
+        matches!(self.value, PathEnum::PromotedConstant { .. })
     }
 
     pub fn is_static_variable(&self) -> bool {
-        matches!(self.value, PathEnum::StaticVariable{..})
+        matches!(self.value, PathEnum::StaticVariable { .. })
     }
 }
-
 
 pub trait PathSupport {
     fn is_field_of(&self, path: &Rc<Path>) -> bool;
@@ -540,7 +536,6 @@ impl PathSupport for Rc<Path> {
     }
 }
 
-
 impl PAGPath for Rc<Path> {
     type FuncTy = FuncId;
 
@@ -579,7 +574,7 @@ impl PAGPath for Rc<Path> {
     fn cast_to<'tcx>(&self, acx: &mut AnalysisContext<'tcx, '_>, ty: Ty<'tcx>) -> Option<Self> {
         acx.cast_to(self, ty)
     }
-    
+
     fn type_variant<'tcx>(&self, acx: &mut AnalysisContext<'tcx, '_>, ty: Ty<'tcx>) -> Option<Self> {
         acx.get_type_variant(self, ty)
     }
@@ -618,113 +613,85 @@ impl PAGPath for Rc<Path> {
     }
 
     fn flatten_fields<'tcx>(self, acx: &mut AnalysisContext<'tcx, '_>) -> Vec<(usize, Self, Ty<'tcx>)> {
-        let param_env = rustc_middle::ty::ParamEnv::reveal_all();
+        let param_env = rustc_middle::ty::TypingEnv::fully_monomorphized();
         let path_ty = self.try_eval_path_type(acx);
         type_util::flatten_fields(acx.tcx, param_env, self, path_ty)
     }
 
     fn get_containing_func(&self) -> Option<FuncId> {
         match &self.value {
-            PathEnum::LocalVariable { func_id, .. } 
-            | PathEnum::Parameter { func_id, .. } 
-            | PathEnum::ReturnValue { func_id } 
-            | PathEnum::Auxiliary { func_id, .. } 
-            | PathEnum::HeapObj { func_id, .. } => Some(*func_id),            
-            PathEnum::QualifiedPath { base, .. } 
-            | PathEnum::OffsetPath { base, .. } => base.get_containing_func(),
+            PathEnum::LocalVariable { func_id, .. }
+            | PathEnum::Parameter { func_id, .. }
+            | PathEnum::ReturnValue { func_id }
+            | PathEnum::Auxiliary { func_id, .. }
+            | PathEnum::HeapObj { func_id, .. } => Some(*func_id),
+            PathEnum::QualifiedPath { base, .. } | PathEnum::OffsetPath { base, .. } => {
+                base.get_containing_func()
+            }
             PathEnum::Constant
-            | PathEnum::StaticVariable { .. } 
-            | PathEnum::PromotedConstant { .. } 
-            | PathEnum::Function(..) 
-            | PathEnum::PromotedArgumentV1Array 
-            | PathEnum::PromotedStrRefArray 
+            | PathEnum::StaticVariable { .. }
+            | PathEnum::PromotedConstant { .. }
+            | PathEnum::Function(..)
+            | PathEnum::PromotedArgumentV1Array
+            | PathEnum::PromotedStrRefArray
             | PathEnum::Type(..) => None,
         }
     }
-
 }
 
 impl PAGPath for Rc<CSPath> {
     type FuncTy = CSFuncId;
 
     fn new_parameter(func: CSFuncId, ordinal: usize) -> Self {
-        CSPath::new_cs_path(
-            func.cid,
-            Path::new_parameter(func.func_id, ordinal)
-        )
+        CSPath::new_cs_path(func.cid, Path::new_parameter(func.func_id, ordinal))
     }
 
     fn new_return_value(func: CSFuncId) -> Self {
-        CSPath::new_cs_path(
-            func.cid,
-            Path::new_return_value(func.func_id)
-        )
+        CSPath::new_cs_path(func.cid, Path::new_return_value(func.func_id))
     }
 
     fn new_aux_local_path<'tcx>(acx: &mut AnalysisContext<'tcx, '_>, func: CSFuncId, ty: Ty<'tcx>) -> Self {
-        CSPath::new_cs_path(
-            func.cid,
-            acx.create_aux_local(func.func_id, ty)
-        )
+        CSPath::new_cs_path(func.cid, acx.create_aux_local(func.func_id, ty))
     }
 
     fn value(&self) -> &PathEnum {
         &self.path.value
     }
-        
+
     fn append_projection(&self, projection_elems: &ProjectionElems) -> Self {
-        CSPath::new_cs_path(
-            self.cid, 
-            Path::append_projection(&self.path, projection_elems)
-        )
+        CSPath::new_cs_path(self.cid, Path::append_projection(&self.path, projection_elems))
     }
 
     fn add_offset(&self, offset: usize) -> Self {
-        CSPath::new_cs_path(
-            self.cid, 
-            Path::add_offset(&self.path, offset)
-        )
+        CSPath::new_cs_path(self.cid, Path::add_offset(&self.path, offset))
     }
 
     fn dyn_ptr_metadata(&self) -> Self {
-        CSPath::new_cs_path(
-            self.cid, 
-            Path::dyn_ptr_metadata(&self.path)
-        )
+        CSPath::new_cs_path(self.cid, Path::dyn_ptr_metadata(&self.path))
     }
 
     fn remove_cast(&self) -> Self {
-        CSPath::new_cs_path(
-            self.cid, 
-            Path::remove_cast(&self.path)
-        )
+        CSPath::new_cs_path(self.cid, Path::remove_cast(&self.path))
     }
 
     fn cast_to<'tcx>(&self, acx: &mut AnalysisContext<'tcx, '_>, ty: Ty<'tcx>) -> Option<Self> {
         if let Some(path) = acx.cast_to(&self.path, ty) {
-            Some(
-                CSPath::new_cs_path(self.cid, path)
-            )
+            Some(CSPath::new_cs_path(self.cid, path))
         } else {
             None
-        }    
+        }
     }
 
     fn type_variant<'tcx>(&self, acx: &mut AnalysisContext<'tcx, '_>, ty: Ty<'tcx>) -> Option<Self> {
         if let Some(path) = acx.get_type_variant(&self.path, ty) {
-            Some(
-                CSPath::new_cs_path(self.cid, path)
-            )
+            Some(CSPath::new_cs_path(self.cid, path))
         } else {
             None
-        }   
+        }
     }
 
     fn regularize(&self, acx: &mut AnalysisContext) -> Self {
-        CSPath::new_cs_path(
-            self.cid, 
-            acx.get_regularized_path(self.path.clone())
-        )
+        CSPath::new_cs_path(self.cid, acx.get_regularized_path(self.path.clone()))
     }
 
     fn try_eval_path_type<'tcx>(&self, acx: &mut AnalysisContext<'tcx, '_>) -> Ty<'tcx> {
@@ -734,7 +701,7 @@ impl PAGPath for Rc<CSPath> {
     fn set_path_rustc_type<'tcx>(&self, acx: &mut AnalysisContext<'tcx, '_>, ty: Ty<'tcx>) {
         acx.set_path_rustc_type(self.path.clone(), ty);
     }
-    
+
     fn has_been_cast(&self, acx: &AnalysisContext) -> bool {
         acx.get_cast_types(&self.path).is_some()
     }
@@ -753,7 +720,10 @@ impl PAGPath for Rc<CSPath> {
 
     fn get_containing_func(&self) -> Option<CSFuncId> {
         if let Some(func_id) = self.path.get_containing_func() {
-            Some(CSFuncId { cid: self.cid, func_id })
+            Some(CSFuncId {
+                cid: self.cid,
+                func_id,
+            })
         } else {
             None
         }

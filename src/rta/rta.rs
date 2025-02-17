@@ -1,19 +1,18 @@
-use std::collections::{HashSet, HashMap};
-use std::time::{Instant, Duration};
 use log::*;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use rustc_hir::def_id::DefId;
-use rustc_middle::ty::{PolyFnSig, GenericArgsRef, Ty, TyCtxt};
+use rustc_middle::ty::{GenericArgsRef, PolyFnSig, Ty, TyCtxt};
 
 use crate::builder::call_graph_builder;
 use crate::graph::call_graph::CallGraph;
 use crate::mir::analysis_context::AnalysisContext;
 use crate::mir::call_site::{BaseCallSite, CallType};
 use crate::mir::function::{FuncId, FunctionReference, GenericArgE};
-use crate::util::{type_util, chunked_queue, results_dumper};
+use crate::util::{chunked_queue, results_dumper, type_util};
 
 use super::body_visitor::BodyVisitor;
-
 
 pub struct RapidTypeAnalysis<'a, 'tcx, 'compilation> {
     /// The analysis context
@@ -74,9 +73,9 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
 
         // add the entry point to the call graph
         let entry_point = self.acx.entry_point;
-        let entry_func_id = self.acx.get_or_add_function_reference(
-            FunctionReference::new_function_reference(entry_point, vec![])
-        );
+        let entry_func_id = self
+            .acx
+            .get_or_add_function_reference(FunctionReference::new_function_reference(entry_point, vec![]));
         self.call_graph.add_node(entry_func_id);
 
         // process terminators of reachable functions
@@ -85,7 +84,7 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
         self.analysis_time = now.elapsed();
         println!("Rapid Type Analysis completed.");
         println!(
-            "Rapid Type Analysis time: {}", 
+            "Rapid Type Analysis time: {}",
             humantime::format_duration(self.analysis_time).to_string()
         );
     }
@@ -127,27 +126,29 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
                 bv.visit_body();
                 self.visited_functions.insert(func_id);
             }
-        }  
-        has_new_functions 
+        }
+        has_new_functions
     }
 
-
     fn solve_trait_upcasting(&mut self) {
-        // The algorithm for solving trait upcasting constraits is inefficient. 
+        // The algorithm for solving trait upcasting constraits is inefficient.
         // However, considering that trait upcasting is rarely used in programs, it will not cause efficiency problems.
         let mut changed = true;
         while changed {
             changed = false;
             for (src_dyn_ty, tgt_dyn_ty_set) in &self.trait_upcasting_relations {
-                if let Some(src_concrete_types) = self.dynamic_to_possible_concrete_types.get_mut(src_dyn_ty) {
+                if let Some(src_concrete_types) = self.dynamic_to_possible_concrete_types.get_mut(src_dyn_ty)
+                {
                     let src_concrete_types = src_concrete_types.clone();
                     for tgt_dyn_ty in tgt_dyn_ty_set {
-                        let tgt_concrete_types = self.dynamic_to_possible_concrete_types.entry(*tgt_dyn_ty).or_default();
+                        let tgt_concrete_types = self
+                            .dynamic_to_possible_concrete_types
+                            .entry(*tgt_dyn_ty)
+                            .or_default();
                         for src_concrete_ty in &src_concrete_types {
                             changed |= tgt_concrete_types.insert(*src_concrete_ty);
                         }
                     }
-
                 }
             }
         }
@@ -155,10 +156,13 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
 
     fn solve_dyn_callsites(&mut self) {
         let dynamic_to_possible_concrete_types = unsafe {
-            &*{&self.dynamic_to_possible_concrete_types as *const HashMap<Ty<'tcx>, HashSet<Ty<'tcx>>>}
+            &*{ &self.dynamic_to_possible_concrete_types as *const HashMap<Ty<'tcx>, HashSet<Ty<'tcx>>> }
         };
         let dyn_callsites = unsafe {
-            &*{&self.dyn_callsites as *const HashMap<Ty<'tcx>, HashSet<(BaseCallSite, DefId, GenericArgsRef<'tcx>)>>}
+            &*{
+                &self.dyn_callsites
+                    as *const HashMap<Ty<'tcx>, HashSet<(BaseCallSite, DefId, GenericArgsRef<'tcx>)>>
+            }
         };
         for (dyn_ty, concrete_types) in dynamic_to_possible_concrete_types {
             if let Some(dyn_callsites_tuple) = dyn_callsites.get(dyn_ty) {
@@ -168,28 +172,32 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
                         replaced_args[0] = (*concrete_type).into();
                         let replaced_args = self.tcx().mk_args(&replaced_args);
                         // Devirtualize the callee function
-                        if let Some((callee_def_id, gen_args)) = call_graph_builder::try_to_devirtualize(
-                            self.tcx(),
-                            *callee_def_id,
-                            replaced_args,
-                        ) {
+                        if let Some((callee_def_id, gen_args)) =
+                            call_graph_builder::try_to_devirtualize(self.tcx(), *callee_def_id, replaced_args)
+                        {
                             let func_id = self.acx.get_func_id(callee_def_id, gen_args);
                             self.add_call_edge(*callsite, func_id);
                         } else {
-                            warn!("Could not resolve function: {:?}, {:?}", callee_def_id, replaced_args);
+                            warn!(
+                                "Could not resolve function: {:?}, {:?}",
+                                callee_def_id, replaced_args
+                            );
                         }
                     }
                 }
-            } 
+            }
         }
     }
 
     fn solve_dyn_fntrait_callsites(&mut self) {
         let dynamic_to_possible_concrete_types = unsafe {
-            &*{&self.dynamic_to_possible_concrete_types as *const HashMap<Ty<'tcx>, HashSet<Ty<'tcx>>>}
+            &*{ &self.dynamic_to_possible_concrete_types as *const HashMap<Ty<'tcx>, HashSet<Ty<'tcx>>> }
         };
         let dyn_fntrait_callsites = unsafe {
-            &*{&self.dyn_fntrait_callsites as *const HashMap<Ty<'tcx>, HashSet<(BaseCallSite, DefId, GenericArgsRef<'tcx>)>>}
+            &*{
+                &self.dyn_fntrait_callsites
+                    as *const HashMap<Ty<'tcx>, HashSet<(BaseCallSite, DefId, GenericArgsRef<'tcx>)>>
+            }
         };
         for (dyn_fntrait_ty, callsites_tuple) in dyn_fntrait_callsites {
             if let Some(concrete_types) = dynamic_to_possible_concrete_types.get(dyn_fntrait_ty) {
@@ -200,7 +208,8 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
                         | rustc_middle::ty::TyKind::Coroutine(def_id, substs) => {
                             for (callsite, _, _) in callsites_tuple {
                                 // try to devirtualize the def_id first
-                                let (def_id, substs) = call_graph_builder::resolve_fn_def(self.tcx(), *def_id, substs);
+                                let (def_id, substs) =
+                                    call_graph_builder::resolve_fn_def(self.tcx(), *def_id, substs);
                                 let func_id = self.acx.get_func_id(def_id, substs);
                                 self.add_call_edge(*callsite, func_id);
                             }
@@ -217,10 +226,10 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
                                 let replaced_args = self.tcx().mk_args(&replaced_args);
 
                                 // Devirtualize the callee function
-                                let resolved_instance = rustc_middle::ty::Instance::resolve(
+                                let resolved_instance = rustc_middle::ty::Instance::try_resolve(
                                     self.tcx(),
-                                    rustc_middle::ty::ParamEnv::reveal_all(),
-                                    *callee_def_id, 
+                                    rustc_middle::ty::TypingEnv::fully_monomorphized(),
+                                    *callee_def_id,
                                     replaced_args,
                                 );
                                 if let Ok(Some(instance)) = resolved_instance {
@@ -234,34 +243,39 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
                                         warn!("Unavailable mir for def_id: {:?}", resolved_def_id);
                                     }
                                 } else {
-                                    warn!("Could not resolve function: {:?}, {:?}", callee_def_id, replaced_args);
-                                }   
+                                    warn!(
+                                        "Could not resolve function: {:?}, {:?}",
+                                        callee_def_id, replaced_args
+                                    );
+                                }
                             }
                         }
                     }
                 }
             } else {
-                error!("Fail to find concrete types for dyn fn* type: {:?}", dyn_fntrait_ty);
+                error!(
+                    "Fail to find concrete types for dyn fn* type: {:?}",
+                    dyn_fntrait_ty
+                );
             }
         }
     }
 
     fn solve_fnptr_callsites(&mut self) {
         let fnptr_sig_to_possible_targets = unsafe {
-            &*{&self.fnptr_sig_to_possible_targets as *const HashMap<PolyFnSig<'tcx>, HashSet<Ty<'tcx>>>}
+            &*{ &self.fnptr_sig_to_possible_targets as *const HashMap<PolyFnSig<'tcx>, HashSet<Ty<'tcx>>> }
         };
-        let fnptr_callsites = unsafe {
-            &*{&self.fnptr_callsites as *const HashMap<Ty<'tcx>, HashSet<BaseCallSite>>}
-        };
+        let fnptr_callsites =
+            unsafe { &*{ &self.fnptr_callsites as *const HashMap<Ty<'tcx>, HashSet<BaseCallSite>> } };
         for (fnptr_type, callsites) in fnptr_callsites {
-            if let rustc_middle::ty::TyKind::FnPtr(fn_sig) = fnptr_type.kind() {
+            if let rustc_middle::ty::TyKind::FnPtr(fnsig, head) = fnptr_type.kind() {
                 for (fn_sig2, possible_targets) in fnptr_sig_to_possible_targets {
-                    if type_util::matched_fn_sig(self.tcx(), fn_sig.clone(), *fn_sig2) {
+                    if type_util::matched_fn_sig(self.tcx(), fnsig.with(*head), *fn_sig2) {
                         for callsite in callsites {
                             for fn_item_ty in possible_targets {
                                 match fn_item_ty.kind() {
-                                    rustc_middle::ty::TyKind::FnDef(def_id, substs) 
-                                    | rustc_middle::ty::TyKind::Closure(def_id, substs) 
+                                    rustc_middle::ty::TyKind::FnDef(def_id, substs)
+                                    | rustc_middle::ty::TyKind::Closure(def_id, substs)
                                     | rustc_middle::ty::TyKind::Coroutine(def_id, substs) => {
                                         let func_id = self.acx.get_func_id(*def_id, substs);
                                         self.add_call_edge(*callsite, func_id);
@@ -274,14 +288,13 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
                         }
                     }
                 }
-            } 
+            }
         }
     }
 
-
     pub fn promote_constants(&mut self, def_id: DefId, gen_args: &Vec<GenericArgE<'tcx>>) {
         for (ordinal, constant_mir) in self.tcx().promoted_mir(def_id).iter().enumerate() {
-            let func_id = self.acx.get_promoted_id(def_id,  gen_args.clone(), ordinal.into());
+            let func_id = self.acx.get_promoted_id(def_id, gen_args.clone(), ordinal.into());
             if !self.visited_functions.contains(&func_id) {
                 let mut bv = BodyVisitor::new(self, func_id, constant_mir);
                 bv.visit_body();
@@ -297,7 +310,7 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
 
         let func_id = self.acx.get_func_id(def_id, self.tcx().mk_args(&[]));
         if !self.visited_functions.contains(&func_id) {
-            let def = rustc_middle::ty::InstanceDef::Item(def_id);
+            let def = rustc_middle::ty::InstanceKind::Item(def_id);
             let mir = self.tcx().instance_mir(def);
             let mut bv = BodyVisitor::new(self, func_id, mir);
             bv.visit_body();
@@ -310,68 +323,94 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
         self.set_callsite_type(callsite, CallType::StaticDispatch);
     }
 
-    pub fn add_dyn_callsite(&mut self, callsite: BaseCallSite, callee_def_id: DefId, callee_substs: GenericArgsRef<'tcx>) {
+    pub fn add_dyn_callsite(
+        &mut self,
+        callsite: BaseCallSite,
+        callee_def_id: DefId,
+        callee_substs: GenericArgsRef<'tcx>,
+    ) {
         let dyn_type = type_util::strip_auto_traits(
-            self.tcx(), 
-            self.tcx().erase_regions_ty(callee_substs[0].expect_ty())
+            self.tcx(),
+            self.tcx().erase_regions_ty(callee_substs[0].expect_ty()),
         );
         debug!("Add dyn callsite: {:?}->{:?}", dyn_type, callsite);
         assert!(matches!(dyn_type.kind(), rustc_middle::ty::TyKind::Dynamic(..)));
-        self.dyn_callsites.entry(dyn_type).or_default().insert((callsite, callee_def_id, callee_substs));
+        self.dyn_callsites
+            .entry(dyn_type)
+            .or_default()
+            .insert((callsite, callee_def_id, callee_substs));
         self.set_callsite_type(callsite, CallType::DynamicDispatch);
     }
 
-    pub fn add_dyn_fntrait_callsite(&mut self, callsite: BaseCallSite, callee_def_id: DefId, callee_substs: GenericArgsRef<'tcx>) {
+    pub fn add_dyn_fntrait_callsite(
+        &mut self,
+        callsite: BaseCallSite,
+        callee_def_id: DefId,
+        callee_substs: GenericArgsRef<'tcx>,
+    ) {
         let dyn_fntrait_type = type_util::strip_auto_traits(
-            self.tcx(), 
-            self.tcx().erase_regions_ty(callee_substs[0].expect_ty())
+            self.tcx(),
+            self.tcx().erase_regions_ty(callee_substs[0].expect_ty()),
         );
-        debug!("Add dyn_fn_trait callsite: {:?}->{:?}", dyn_fntrait_type, callsite);
-        self.dyn_fntrait_callsites.entry(dyn_fntrait_type).or_default().insert((callsite, callee_def_id, callee_substs));
+        debug!(
+            "Add dyn_fn_trait callsite: {:?}->{:?}",
+            dyn_fntrait_type, callsite
+        );
+        self.dyn_fntrait_callsites
+            .entry(dyn_fntrait_type)
+            .or_default()
+            .insert((callsite, callee_def_id, callee_substs));
         self.set_callsite_type(callsite, CallType::DynamicFnTrait);
     }
 
     pub fn add_fnptr_callsite(&mut self, callsite: BaseCallSite, fnptr_type: Ty<'tcx>) {
-        let fnptr_type =  self.tcx().erase_regions_ty(fnptr_type);
+        let fnptr_type = self.tcx().erase_regions_ty(fnptr_type);
         debug!("Add fnptr callsite: {:?} -> {:?}", fnptr_type, callsite);
-        self.fnptr_callsites.entry(fnptr_type).or_default().insert(callsite);
+        self.fnptr_callsites
+            .entry(fnptr_type)
+            .or_default()
+            .insert(callsite);
         self.set_callsite_type(callsite, CallType::FnPtr);
     }
 
-
     pub fn add_possible_concrete_type(&mut self, dyn_ty: Ty<'tcx>, concrete_ty: Ty<'tcx>) {
-        let dyn_ty = type_util::strip_auto_traits(
-            self.tcx(), 
-            self.tcx().erase_regions_ty(dyn_ty)
-        );
+        let dyn_ty = type_util::strip_auto_traits(self.tcx(), self.tcx().erase_regions_ty(dyn_ty));
         let concrete_ty = self.tcx().erase_regions_ty(concrete_ty);
-        self.dynamic_to_possible_concrete_types.entry(dyn_ty).or_default().insert(concrete_ty);
+        self.dynamic_to_possible_concrete_types
+            .entry(dyn_ty)
+            .or_default()
+            .insert(concrete_ty);
     }
 
     pub fn add_possible_fnptr_target(&mut self, fnptr_type: Ty<'tcx>, fn_item_type: Ty<'tcx>) {
         let fnptr_type = self.tcx().erase_regions_ty(fnptr_type);
         let fn_item_type = self.tcx().erase_regions_ty(fn_item_type);
-        debug!("Possible target fn item for fnptr type {:?}, {:?}", fnptr_type, fn_item_type);
-        if let rustc_middle::ty::TyKind::FnPtr(fnsig) = fnptr_type.kind() {
-            self.fnptr_sig_to_possible_targets.entry(*fnsig).or_default().insert(fn_item_type);
-            // self.fnptr_possible_targets.insert(fn_item_type);
+        debug!(
+            "Possible target fn item for fnptr type {:?}, {:?}",
+            fnptr_type, fn_item_type
+        );
+        if let rustc_middle::ty::TyKind::FnPtr(fnsig, head) = fnptr_type.kind() {
+            self.fnptr_sig_to_possible_targets
+                .entry(fnsig.with(*head))
+                .or_default()
+                .insert(fn_item_type);
         } else {
             unreachable!();
         }
     }
 
     pub fn add_trait_upcasting_relation(&mut self, src_dyn_ty: Ty<'tcx>, tgt_dyn_ty: Ty<'tcx>) {
-        let src_dyn_ty = type_util::strip_auto_traits(
-            self.tcx(), 
-            self.tcx().erase_regions_ty(src_dyn_ty)
-        );
-        let tgt_dyn_ty = type_util::strip_auto_traits(
-            self.tcx(), 
-            self.tcx().erase_regions_ty(tgt_dyn_ty)
-        );
+        let src_dyn_ty = type_util::strip_auto_traits(self.tcx(), self.tcx().erase_regions_ty(src_dyn_ty));
+        let tgt_dyn_ty = type_util::strip_auto_traits(self.tcx(), self.tcx().erase_regions_ty(tgt_dyn_ty));
         if src_dyn_ty != tgt_dyn_ty {
-            info!("trait_upcasting coercion from {:?} to {:?}", src_dyn_ty, tgt_dyn_ty);
-            self.trait_upcasting_relations.entry(src_dyn_ty).or_default().insert(tgt_dyn_ty);
+            info!(
+                "trait_upcasting coercion from {:?} to {:?}",
+                src_dyn_ty, tgt_dyn_ty
+            );
+            self.trait_upcasting_relations
+                .entry(src_dyn_ty)
+                .or_default()
+                .insert(tgt_dyn_ty);
         }
     }
 
@@ -382,10 +421,8 @@ impl<'a, 'tcx, 'compilation> RapidTypeAnalysis<'a, 'tcx, 'compilation> {
     pub fn set_callsite_type(&mut self, callsite: BaseCallSite, call_type: CallType) {
         self.call_graph.set_callsite_type(callsite, call_type);
     }
-    
+
     pub fn dump_call_graph(&self, cg_path: &std::path::Path) {
         results_dumper::dump_call_graph(self.acx, &self.call_graph, cg_path);
     }
-
 }
-

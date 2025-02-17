@@ -1,5 +1,5 @@
 pub mod body_visitor;
-pub mod rta; 
+pub mod rta;
 
 use log::*;
 use rustc_driver::Compilation;
@@ -48,13 +48,16 @@ impl RTACallbacks {
             rta.dump_call_graph(cg_path);
         }
     }
-
 }
 
 impl rustc_driver::Callbacks for RTACallbacks {
     /// Called before creating the compiler instance
     fn config(&mut self, config: &mut interface::Config) {
-        self.file_name = config.input.source_name().prefer_remapped_unconditionaly().to_string();
+        self.file_name = config
+            .input
+            .source_name()
+            .prefer_remapped_unconditionaly()
+            .to_string();
         debug!("Processing input file: {}", self.file_name);
     }
 
@@ -62,16 +65,9 @@ impl rustc_driver::Callbacks for RTACallbacks {
     /// At this point the compiler is ready to tell us all it knows and we can proceed to do abstract
     /// interpretation of all of the functions that will end up in the compiler output.
     /// If this method returns false, the compilation will stop.
-    fn after_analysis<'tcx>(
-        &mut self,
-        compiler: &interface::Compiler,
-        queries: &'tcx Queries<'tcx>,
-    ) -> Compilation {
+    fn after_analysis<'tcx>(&mut self, compiler: &interface::Compiler, queries: TyCtxt<'tcx>) -> Compilation {
         compiler.sess.dcx().abort_if_errors();
-        queries
-            .global_ctxt()
-            .unwrap()
-            .enter(|tcx| self.run_rapid_type_analysis(compiler, tcx));
+        self.run_rapid_type_analysis(compiler, queries);
         Compilation::Continue
     }
 }

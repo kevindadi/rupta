@@ -1,14 +1,8 @@
-// Copyright (c) 2024 <Wei Li>.
-//
-// This source code is licensed under the GNU license found in the
-// LICENSE file in the root directory of this source tree.
+#![feature(rustc_private)]
 
-//! This provides an implementation for the "cargo pta" subcommand.
-//! 
-//! The subcommand is the same as "cargo check" but with three differences:
-//! 1) It implicitly adds the options "-Z always_encode_mir" to the rustc invocation.
-//! 2) It calls `pta` rather than `rustc` for all the targets of the current package.
-//! 3) It runs `cargo test --no-run` for test targets.
+extern crate rustc_driver;
+extern crate rustc_hir;
+extern crate rustc_session;
 
 use cargo_metadata::Package;
 use log::info;
@@ -31,7 +25,10 @@ Usage:
 const PTA_BUILD_STD: &str = "PTA_BUILD_STD";
 
 pub fn main() {
-    if std::env::args().take_while(|a| a != "--").any(|a| a == "--help" || a == "-h") {
+    if std::env::args()
+        .take_while(|a| a != "--")
+        .any(|a| a == "--help" || a == "-h")
+    {
         println!("{}", CARGO_PTA_HELP);
         return;
     }
@@ -100,11 +97,12 @@ fn call_cargo_on_each_package_target(package: &Package) {
         let kind = target
             .kind
             .first()
-            .expect("bad cargo metadata: target::kind");
+            .expect("bad cargo metadata: target::kind")
+            .to_string();
         if lib_only && kind != "lib" {
             continue;
         }
-        call_cargo_on_target(&target.name, kind);
+        call_cargo_on_target(&target.name, &kind);
     }
 }
 
